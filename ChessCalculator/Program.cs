@@ -172,6 +172,7 @@ internal class Program
             return a.Length.CompareTo(b.Length);
         }
     }
+
     public class NodeComparer : IComparer<Node>
     {
         public int Compare(Node? a, Node? b)
@@ -193,6 +194,28 @@ internal class Program
                 else return 1;
             }
             else return -1;
+        }
+    }
+
+    public class NodeEqualityComparer : IEqualityComparer<Node>
+    {
+        public bool Equals(Node? a, Node? b)
+        {
+            if (a != null && b != null)
+            {
+                return Board.Compare(a.board, b.board);
+            }
+
+            if (a == null)
+            {
+                if (b == null) return true;
+            }
+            return false;
+        }
+
+        int IEqualityComparer<Node>.GetHashCode(Node obj)
+        {
+            return (int)obj.address;
         }
     }
 
@@ -345,16 +368,18 @@ internal class Program
         Board board = Board.DefaultBoard;
 
         (int currentX, int currentLevel) = LoadProgressiveState();
-        List<Node> nodes = LoadNodes();
+        SortedSet<Node> nodes = LoadNodes();
         Console.WriteLine($"Loaded {nodes.Count} boards");
         Console.WriteLine($"currentX: {currentX}, currentLevel: {currentLevel}");
         if (nodes.Count == 0)
         {
-            nodes = new List<Node>();
-            nodes.Add(new Node());
-            nodes[0].address = 0;
-            nodes[0].level = 0;
-            nodes[0].board = board.Compress();
+            nodes = new SortedSet<Node>(new NodeComparer());
+            nodes.Add(new Node()
+            {
+                address = 0,
+                level = 0,
+                board = board.Compress()
+            });
         }
 
         Console.WriteLine();
@@ -366,8 +391,10 @@ internal class Program
         int currentLevelBoards = 1;
         int totalBoards = 0;
         int printedDigits = 0;
+        int x = 0;
         Node newNode = new Node();
         Node[] tempNodes = new Node[1];
+        SortedSet<Node> levelNodes = new();
 
         bool finishedLevel = false;
 
@@ -387,21 +414,31 @@ internal class Program
             Console.Write(currentLevel + 1);
 
             // First grow the list
+            /*
             tempNodes = new Node[nodes.Count];
             nodes.CopyTo(tempNodes);
             nodes = new List<Node>(nodes.Count + (currentLevelBoards * 30));
             nodes.AddRange(tempNodes);
             tempNodes = null;
+            */
 
             // Then reset our count
             currentLevelBoards = 0;
+            x = 0;
             finishedLevel = true;
             Console.Write("->");
+            levelNodes.Clear();
 
             // Run a simulation for every node in the list
-            for (int x = currentX; x < nodes.Count; x++)
+            //for (int x = currentX; x < nodes.Count; x++)
+            foreach (Node node in nodes)
             {
-                if (nodes[x].level != currentLevel)
+                if (node.level != currentLevel)
+                    continue;
+
+                x++;
+
+                if (x <= currentX)
                     continue;
 
                 if (totalBoards >= hundThous * 100000)
@@ -412,14 +449,14 @@ internal class Program
                 }
 
                 //nodeIndex = levelNodes[x];
-                sub1.Start();
                 // Don't run if it already has children or is at the end
-                if (nodes[x].isEnd || nodes[x].children.Count > 0)
+                if (node.isEnd || node.children.Count > 0)
                     continue;
 
                 // Grab the board from the list
+                sub1.Start();
                 nodeBoard = new Board();
-                nodeBoard.Decompress(nodes[x].board);
+                nodeBoard.Decompress(node.board);
                 sub1.Stop();
 
                 sub2.Start();
@@ -436,28 +473,33 @@ internal class Program
                     sub4.Start();
 
                     newNode = new Node(compressedBoard, (ushort)(currentLevel + 1));
-                    index = nodes.BinarySearch(newNode, new NodeComparer());
+                    bool found = nodes.TryGetValue(newNode, out Node match);
                     sub4.Stop();
                     sub5.Start();
-                    // Found
-                    if (index >= 0)
+
+                    // Found in the sorted list
+                    if (found)
                     {
-                        nodes[x].children.Add(nodes[index].address);
+                        node.children.Add(match.address);
                         savedBoards++;
                     }
-                    // Not found, add
+                    // Not found, check if its in the level nodes
                     else
                     {
-                        insertIndex = ~index;
-                        newNode.address = (ulong)nodes.Count;
-                        nodes.Insert(insertIndex, newNode);
-                        if (x >= insertIndex)
-                            x++;
-                        nodes[x].children.Add(newNode.address);
+                        if (levelNodes.TryGetValue(newNode, out match))
+                        {
+                            node.children.Add(match.address);
+                            savedBoards++;
+                        }
+                        else
+                        {
+                            newNode.address = (ulong)(nodes.Count + levelNodes.Count);
+                            node.children.Add(newNode.address);
+                            levelNodes.Add(newNode);
+                        }
                     }
 
                     sub5.Stop();
-                    sub6.Start();
 
                     // Update the console periodically
                     if (currentLevelBoards % 10000 == 0)
@@ -466,17 +508,14 @@ internal class Program
                         Console.Write(new string('\b', printedDigits) + formatted);
                         printedDigits = formatted.Length;
                     }
-                    sub6.Stop();
-
-                    currentX = x;
 
                     sub2.Start();
                 }
                 sub2.Stop();
 
                 // If we don't have any child nodes, make sure to mark it as a dead end
-                if (nodes[x].children.Count == 0)
-                    nodes[x].isEnd = true;
+                if (node.children.Count == 0)
+                    node.isEnd = true;
             }
 
             if (finishedLevel)
@@ -485,11 +524,19 @@ internal class Program
                 currentX = 0;
             }
 
+            // Add level nodes to our sorted set
+            sub6.Start();
+            nodes.UnionWith(levelNodes);
+            sub6.Stop();
+
             Console.WriteLine(new string('\b', printedDigits) + currentLevelBoards);
             printedDigits = 0;
         }
 
         main.Stop();
+
+        Console.WriteLine();
+        Console.WriteLine("Done.");
 
         ulong[] levelValues = new ulong[currentLevel + 2];
         foreach (Node n in nodes)
@@ -517,21 +564,27 @@ internal class Program
         Console.WriteLine($"sub5: {sub5.Elapsed}");
         Console.WriteLine($"sub6: {sub6.Elapsed}");
         Console.WriteLine($"other: {main.Elapsed - (sub1.Elapsed + sub2.Elapsed + sub3.Elapsed + sub4.Elapsed + sub5.Elapsed + sub6.Elapsed)}");
+        Console.WriteLine();
 
         SaveNodes(nodes);
         SaveProgressiveState(currentX, currentLevel);
 
         Console.WriteLine($"Saved {nodes.Count} boards");
+        nodes.Clear();
+        levelNodes.Clear();
     }
 
-    private static List<Node> LoadNodes()
+    private static SortedSet<Node> LoadNodes()
     {
-        List<Node> nodes = new();
+        Console.WriteLine("Reading...");
+        SortedSet<Node> nodes = new(new NodeComparer());
 
         if (!File.Exists(NodeFile))
             return nodes;
 
         string data = File.ReadAllText(NodeFile);
+
+        Console.WriteLine("Parsing...");
 
         int startIndex = 0;
         while (startIndex < data.Length)
@@ -556,8 +609,9 @@ internal class Program
         return nodes;
     }
 
-    private static void SaveNodes(in List<Node> nodes)
+    private static void SaveNodes(in SortedSet<Node> nodes)
     {
+        Console.WriteLine("Compressing...");
         List<string> lines = new();
         foreach (Node node in nodes)
         {
@@ -575,6 +629,7 @@ internal class Program
             }
             lines.Add(line);
         }
+        Console.WriteLine("Saving...");
 
         using (StreamWriter sw = new StreamWriter(NodeFile))
         {
@@ -640,7 +695,7 @@ internal class Program
     }
 }
 
-class Node
+class Node : IComparable<Node>
 {
     public List<ulong> children = new();
     public byte[] board;
@@ -653,6 +708,27 @@ class Node
     public Node(byte[] board, ushort level) { this.board = board; this.level = level; }
 
     public Node(ulong address, ushort level) { this.address = address; this.level = level; }
+
+    public int CompareTo(Node obj)
+    {
+        if (this != null && obj != null)
+        {
+            int result;
+            for (int index = 0; index < Math.Min(this.board.Length, obj.board.Length); index++)
+            {
+                result = this.board[index].CompareTo(obj.board[index]);
+                if (result != 0) return result;
+            }
+            return this.board.Length.CompareTo(obj.board.Length);
+        }
+
+        if (this == null)
+        {
+            if (obj == null) return 0;
+            else return 1;
+        }
+        else return -1;
+    }
 }
 
 class Piece
