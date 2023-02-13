@@ -367,27 +367,12 @@ internal class Program
     {
         Board board = Board.DefaultBoard;
 
-        (int currentX, int currentLevel) = LoadProgressiveState();
-        SortedSet<Node> nodes = LoadNodes();
-        Console.WriteLine($"Loaded {nodes.Count} boards");
-        Console.WriteLine($"currentX: {currentX}, currentLevel: {currentLevel}");
-        if (nodes.Count == 0)
-        {
-            nodes = new SortedSet<Node>(new NodeComparer());
-            nodes.Add(new Node()
-            {
-                address = 0,
-                level = 0,
-                board = board.Compress()
-            });
-        }
-
-        Console.WriteLine();
         Board nodeBoard;
         byte[] compressedBoard;
         int index = 0;
         int insertIndex = 0;
         int savedBoards = 0;
+        int sameLevelSavedBoards = 0;
         int currentLevelBoards = 1;
         int totalBoards = 0;
         int printedDigits = 0;
@@ -399,7 +384,6 @@ internal class Program
         bool finishedLevel = false;
 
         Stopwatch main = new();
-        main.Start();
 
         Stopwatch sub1 = new();
         Stopwatch sub2 = new();
@@ -407,6 +391,32 @@ internal class Program
         Stopwatch sub4 = new();
         Stopwatch sub5 = new();
         Stopwatch sub6 = new();
+
+        sub1.Start();
+        (int currentX, int currentLevel) = LoadProgressiveState();
+        SortedSet<Node> nodes = LoadNodes();
+        sub1.Stop();
+
+        Console.WriteLine($"Loaded {nodes.Count} boards in {sub1.Elapsed}");
+        Console.WriteLine($"currentX: {currentX}, currentLevel: {currentLevel}");
+        sub1.Reset();
+
+        if (nodes.Count == 0)
+        {
+            nodes = new SortedSet<Node>(new NodeComparer())
+            {
+                new Node()
+                {
+                    address = 0,
+                    level = 0,
+                    board = board.Compress()
+                }
+            };
+        }
+
+        Console.WriteLine();
+
+        main.Start();
 
         // Loop for however many moves we chose to make
         while (totalBoards < hundThous * 100000)
@@ -481,7 +491,12 @@ internal class Program
                     if (found)
                     {
                         node.children.Add(match.address);
-                        savedBoards++;
+                        if (match.level == newNode.level)
+                            sameLevelSavedBoards++;
+                        else
+                            savedBoards++;
+
+                        newNode = null;
                     }
                     // Not found, check if its in the level nodes
                     else
@@ -489,7 +504,9 @@ internal class Program
                         if (levelNodes.TryGetValue(newNode, out match))
                         {
                             node.children.Add(match.address);
-                            savedBoards++;
+                            sameLevelSavedBoards++;
+
+                            newNode = null;
                         }
                         else
                         {
@@ -527,6 +544,9 @@ internal class Program
             // Add level nodes to our sorted set
             sub6.Start();
             nodes.UnionWith(levelNodes);
+
+            levelNodes.Clear();
+            GC.Collect();
             sub6.Stop();
 
             Console.WriteLine(new string('\b', printedDigits) + currentLevelBoards);
@@ -551,9 +571,12 @@ internal class Program
 
         Console.WriteLine();
         Console.WriteLine($"We have {nodes.Count} unique boards for up to {currentLevel + 1} moves " +
-            $"({Math.Ceiling((double)(currentLevel + 1) / 2)} white, {Math.Floor((double)(currentLevel + 1) / 2)} black)");
-        Console.WriteLine($"Calculated {totalBoards} unique boards for this round.");
-        Console.WriteLine($"Saved {savedBoards} boards ({Math.Round((double)savedBoards / totalBoards * 100)}%) by checking if they're the same");
+            $"({Math.Ceiling((double)(currentLevel + 1) / 2)} white, {Math.Floor((double)(currentLevel + 1) / 2)} black).");
+        Console.WriteLine($"Calculated {totalBoards} boards for this round.");
+        Console.WriteLine($"Saved {sameLevelSavedBoards + savedBoards} boards " +
+            $"(~{Math.Round((double)(sameLevelSavedBoards + savedBoards) / totalBoards * 100)}%) by checking if they're the same.");
+        Console.WriteLine($"~{Math.Round((double)sameLevelSavedBoards / (sameLevelSavedBoards + savedBoards) * 100)}% " +
+            $"of the saved boards were amongst the same level.");
         Console.WriteLine("-----------------");
         Console.WriteLine($"Calculated these boards in {main.Elapsed}");
         Console.WriteLine();
@@ -566,76 +589,123 @@ internal class Program
         Console.WriteLine($"other: {main.Elapsed - (sub1.Elapsed + sub2.Elapsed + sub3.Elapsed + sub4.Elapsed + sub5.Elapsed + sub6.Elapsed)}");
         Console.WriteLine();
 
+        sub1.Reset();
+        sub1.Start();
         SaveNodes(nodes);
         SaveProgressiveState(currentX, currentLevel);
+        sub1.Stop();
 
-        Console.WriteLine($"Saved {nodes.Count} boards");
+        Console.WriteLine($"Saved {nodes.Count} boards to disk in {sub1.Elapsed}");
+
         nodes.Clear();
         levelNodes.Clear();
+
+        nodes = null;
+        levelNodes = null;
+
+        GC.Collect();
     }
 
     private static SortedSet<Node> LoadNodes()
     {
         Console.WriteLine("Reading...");
         SortedSet<Node> nodes = new(new NodeComparer());
+        List<Node> tempNodes = new();
 
         if (!File.Exists(NodeFile))
             return nodes;
 
-        string data = File.ReadAllText(NodeFile);
+        FileInfo fi = new FileInfo(NodeFile);
+        long length = fi.Length;
 
-        Console.WriteLine("Parsing...");
+        Console.Write("Reading... 00%");
 
-        int startIndex = 0;
-        while (startIndex < data.Length)
+        ulong num = 0;
+        long startIndex = 0;
+
+        using (StreamReader sr = new StreamReader(NodeFile))
         {
-            Node n = new();
-            n.board = data.Substring(startIndex, 39).ToCharArray().Select(a => (byte)a).ToArray();
+            char[] board = new char[39];
+            char[] address = new char[8];
+            char[] level = new char[2];
+            byte childCountIsEnd = 0;
 
-            n.address = BitConverter.ToUInt64(data.Substring(startIndex + 39, 8).ToCharArray().Select(a => (byte)a).ToArray());
-            n.level = BitConverter.ToUInt16(data.Substring(startIndex + 47, 2).ToCharArray().Select(a => (byte)a).ToArray());
-            n.isEnd = data[startIndex + 49] >= 128;
+            char[] child = new char[8];
 
-            byte childCount = (byte)(data[startIndex + 49] - (n.isEnd ? 128 : 0));
-            for (int i = 0; i < childCount; i += 8)
+            while (!sr.EndOfStream)
             {
-                n.children.Add(BitConverter.ToUInt64(data.Substring(startIndex + 50 + (8 * i), 8).ToCharArray().Select(a => (byte)a).ToArray()));
-            }
-            nodes.Add(n);
+                Node n = new();
 
-            startIndex += 50 + (8 * childCount);
+                sr.Read(board, 0, 39);
+                sr.Read(address, 0, 8);
+                sr.Read(level, 0, 2);
+
+                n.board = board.Select(c => (byte)c).ToArray();
+                n.address = BitConverter.ToUInt64(address.Select(c => (byte)c).ToArray());
+                n.level = BitConverter.ToUInt16(level.Select(c => (byte)c).ToArray());
+                childCountIsEnd = (byte)sr.Read();
+                n.isEnd = childCountIsEnd >= 128;
+                byte childCount = (byte)(childCountIsEnd - (n.isEnd ? 128 : 0));
+
+                for (int i = 0; i < childCount; i++)
+                {
+                    sr.Read(child, 0, 8);
+                    n.children.Add(BitConverter.ToUInt64(child.Select(c => (byte)c).ToArray()));
+                }
+
+                nodes.Add(n);
+
+                if (num % 10000 == 0)
+                {
+                    Console.Write($"\b\b\b{Math.Floor((double)startIndex / length * 100.0):00}%");
+                }
+                num++;
+
+                startIndex += 50 + childCount * 8;
+            }
         }
+        GC.Collect();
+        //nodes = new SortedSet<Node>(tempNodes, new NodeComparer());
+
+        Console.WriteLine("\b\b\b100%");
 
         return nodes;
     }
 
     private static void SaveNodes(in SortedSet<Node> nodes)
     {
-        Console.WriteLine("Compressing...");
-        List<string> lines = new();
-        foreach (Node node in nodes)
-        {
-            string line = new string(node.board.Select(a => (char)a).ToArray());
-            line += new string(BitConverter.GetBytes(node.address).Select(a => (char)a).ToArray());
-            line += new string(BitConverter.GetBytes(node.level).Select(a => (char)a).ToArray());
-            line += (char)((node.isEnd ? 128 : 0) + node.children.Count);
-
-            if (node.children.Count > 127)
-                throw new Exception("Too many children");
-
-            foreach (ulong child in node.children)
-            {
-                line += new string(BitConverter.GetBytes(child).Select(a => (char)a).ToArray());
-            }
-            lines.Add(line);
-        }
-        Console.WriteLine("Saving...");
+        ulong num = 0;
+        Console.Write("Saving... 00%");
 
         using (StreamWriter sw = new StreamWriter(NodeFile))
         {
-            foreach (string line in lines)
+            foreach (Node node in nodes)
+            {
+                string line = new string(node.board.Select(c => (char)c).ToArray());
+                line += new string(BitConverter.GetBytes(node.address).Select(c => (char)c).ToArray());
+                line += new string(BitConverter.GetBytes(node.level).Select(c => (char)c).ToArray());
+                line += (char)((node.isEnd ? 128 : 0) + node.children.Count);
+
+                if (node.children.Count > 127)
+                    throw new Exception("Too many children");
+
+                foreach (ulong child in node.children)
+                {
+                    line += new string(BitConverter.GetBytes(child).Select(c => (char)c).ToArray());
+                }
+
                 sw.Write(line);
+
+                if (num % 10000 == 0)
+                {
+                    Console.Write($"\b\b\b{Math.Floor((double)num / nodes.Count * 100.0):00}%");
+                }
+                num++;
+            }
         }
+
+        Console.WriteLine("\b\b\b100%");
+        num = 0;
     }
 
     private static (int, int) LoadProgressiveState()
@@ -698,7 +768,7 @@ internal class Program
 class Node : IComparable<Node>
 {
     public List<ulong> children = new();
-    public byte[] board;
+    public byte[] board = new byte[39];
     public ulong address = 0;
     public ushort level = 0;
     public bool isEnd = false;
