@@ -392,6 +392,8 @@ internal class Program
         Stopwatch sub5 = new();
         Stopwatch sub6 = new();
 
+        Console.WriteLine();
+
         sub1.Start();
         (int currentX, int currentLevel) = LoadProgressiveState();
         SortedSet<Node> nodes = LoadNodes();
@@ -608,9 +610,7 @@ internal class Program
 
     private static SortedSet<Node> LoadNodes()
     {
-        Console.WriteLine("Reading...");
         SortedSet<Node> nodes = new(new NodeComparer());
-        List<Node> tempNodes = new();
 
         if (!File.Exists(NodeFile))
             return nodes;
@@ -639,11 +639,11 @@ internal class Program
                 sr.Read(board, 0, 39);
                 sr.Read(address, 0, 8);
                 sr.Read(level, 0, 2);
+                childCountIsEnd = (byte)sr.Read();
 
                 n.board = board.Select(c => (byte)c).ToArray();
                 n.address = BitConverter.ToUInt64(address.Select(c => (byte)c).ToArray());
                 n.level = BitConverter.ToUInt16(level.Select(c => (byte)c).ToArray());
-                childCountIsEnd = (byte)sr.Read();
                 n.isEnd = childCountIsEnd >= 128;
                 byte childCount = (byte)(childCountIsEnd - (n.isEnd ? 128 : 0));
 
@@ -665,7 +665,6 @@ internal class Program
             }
         }
         GC.Collect();
-        //nodes = new SortedSet<Node>(tempNodes, new NodeComparer());
 
         Console.WriteLine("\b\b\b100%");
 
