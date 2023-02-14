@@ -396,7 +396,8 @@ internal class Program
 
         sub1.Start();
         (int currentX, int currentLevel) = LoadProgressiveState();
-        SortedSet<Node> nodes = LoadNodes();
+        //SortedSet<Node> nodes = new SortedSet<Node>(new NodeComparer());
+        LoadNodes(out SortedSet<Node> nodes);
         sub1.Stop();
 
         Console.WriteLine($"Loaded {nodes.Count} boards in {sub1.Elapsed}");
@@ -405,15 +406,14 @@ internal class Program
 
         if (nodes.Count == 0)
         {
-            nodes = new SortedSet<Node>(new NodeComparer())
-            {
+            nodes.Add(
                 new Node()
                 {
                     address = 0,
                     level = 0,
                     board = board.Compress()
                 }
-            };
+            );
         }
 
         Console.WriteLine();
@@ -608,12 +608,13 @@ internal class Program
         GC.Collect();
     }
 
-    private static SortedSet<Node> LoadNodes()
+    private static void LoadNodes(out SortedSet<Node> nodes)
     {
-        SortedSet<Node> nodes = new(new NodeComparer());
+        //SortedSet<Node> nodes = new(new NodeComparer());
+        nodes = new SortedSet<Node>(new NodeComparer());
 
         if (!File.Exists(NodeFile))
-            return nodes;
+            return;// nodes;
 
         FileInfo fi = new FileInfo(NodeFile);
         long length = fi.Length;
@@ -668,7 +669,7 @@ internal class Program
 
         Console.WriteLine("\b\b\b100%");
 
-        return nodes;
+        //return nodes;
     }
 
     private static void SaveNodes(in SortedSet<Node> nodes)
