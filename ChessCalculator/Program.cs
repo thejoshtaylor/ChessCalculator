@@ -596,6 +596,96 @@ internal class Program
         GC.Collect();
     }
 
+    /// <summary>
+    /// Find or create a node in the file system
+    /// </summary>
+    /// <param name="node">Input the node to search for, output the node found (or original node)</param>
+    /// <returns>true if found, false otherwise</returns>
+    private static bool FindOrCreateNode(ref Node node)
+    {
+        string hexBoard = Convert.ToHexString(node.board, 0, 6);
+        bool white = node.board[1] >= 128;
+
+        // White's turn vs black's turn
+        string path = white ? "w\\" : "b\\";
+
+        // How many pieces on the board
+        path += hexBoard[0] + hexBoard[1] + "\\";
+
+        // Castleable
+        path += hexBoard[4] + hexBoard[5] + "\\";
+
+        // En Passantable
+        path += hexBoard[2] + hexBoard[3] + "\\";
+
+        // File name is first piece
+        path += hexBoard[6] + hexBoard[7];
+
+        int read;
+        int b;
+        bool past = false;
+        bool found = false;
+        byte[] newLine = new byte[38];
+        byte[] lastLine = new byte[38];
+        Span<byte> readSpan = new Span<byte>(lastLine, 0, 38);
+        ReadOnlySpan<byte> writeSpan = new ReadOnlySpan<byte>(newLine, 0, 38);
+        byte[] levelBytes;
+
+        // Check if the exact board is there
+        using (FileStream fs = new FileStream(path, FileMode.OpenOrCreate))
+        {
+            // 36 bytes of pieces
+            for (read = 0; read < 36; read++)
+            {
+                b = (byte)fs.ReadByte();
+                if (b != node.board[read + 3])
+                {
+                    past = b > node.board[read + 3];
+                    read++;
+                    break;
+                }
+            }
+            // If we didn't match the whole board
+            if (read != 36)
+            {
+                // Did we pass where we should be
+                if (past)
+                {
+                    // Go back to start
+                    fs.Seek(-read, SeekOrigin.Current);
+
+                    // Build new line
+                    for (read = 0; read < 36; read++)
+                    {
+                        newLine[read] = node.board[read + 3];
+                    }
+                    levelBytes = BitConverter.GetBytes(node.level);
+                    newLine[36] = levelBytes[0];
+                    newLine[37] = levelBytes[1];
+
+                    // Insert into where we belong
+                    while (fs.Position < fs.Length)
+                    {
+                        fs.Read(readSpan);
+                        fs.Seek(-38, SeekOrigin.Current);
+                        fs.Write(writeSpan);
+                        for (read = 0; read < 38; read++)
+                        {
+                            newLine[read] = lastLine[read];
+                        }
+                    }
+                }
+                // Didn't pass insertion point, move to next line
+                else
+                {
+                    fs.Seek(38 - read, SeekOrigin.Current);
+                }
+            }
+        }
+
+        return found;
+    }
+
     private static void LoadNodes(out SortedSet<Node> nodes)
     {
         nodes = new SortedSet<Node>(new NodeComparer());
