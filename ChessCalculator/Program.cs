@@ -396,7 +396,6 @@ internal class Program
 
         sub1.Start();
         (int currentX, int currentLevel) = LoadProgressiveState();
-        //SortedSet<Node> nodes = new SortedSet<Node>(new NodeComparer());
         LoadNodes(out SortedSet<Node> nodes);
         sub1.Stop();
 
@@ -425,15 +424,6 @@ internal class Program
         {
             Console.Write(currentLevel + 1);
 
-            // First grow the list
-            /*
-            tempNodes = new Node[nodes.Count];
-            nodes.CopyTo(tempNodes);
-            nodes = new List<Node>(nodes.Count + (currentLevelBoards * 30));
-            nodes.AddRange(tempNodes);
-            tempNodes = null;
-            */
-
             // Then reset our count
             currentLevelBoards = 0;
             x = 0;
@@ -442,7 +432,6 @@ internal class Program
             levelNodes.Clear();
 
             // Run a simulation for every node in the list
-            //for (int x = currentX; x < nodes.Count; x++)
             foreach (Node node in nodes)
             {
                 if (node.level != currentLevel)
@@ -460,7 +449,6 @@ internal class Program
                     break;
                 }
 
-                //nodeIndex = levelNodes[x];
                 // Don't run if it already has children or is at the end
                 if (node.isEnd || node.children.Count > 0)
                     continue;
@@ -610,11 +598,10 @@ internal class Program
 
     private static void LoadNodes(out SortedSet<Node> nodes)
     {
-        //SortedSet<Node> nodes = new(new NodeComparer());
         nodes = new SortedSet<Node>(new NodeComparer());
 
         if (!File.Exists(NodeFile))
-            return;// nodes;
+            return;
 
         FileInfo fi = new FileInfo(NodeFile);
         long length = fi.Length;
@@ -668,8 +655,6 @@ internal class Program
         GC.Collect();
 
         Console.WriteLine("\b\b\b100%");
-
-        //return nodes;
     }
 
     private static void SaveNodes(in SortedSet<Node> nodes)
