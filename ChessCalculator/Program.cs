@@ -6,15 +6,20 @@ using System.Diagnostics.SymbolStore;
 using System.IO;
 using System.Net.Security;
 using System.Reflection.Metadata.Ecma335;
+using System.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Xml.Linq;
 
 internal class Program
 {
     public static string NodeFile = "nodes.nds";
     public static string StateFile = "state.ste";
 
-    public static Board CurrentBoard = new();
+    //public static Board CurrentBoard = new();
+
+    public static CancellationTokenSource source = new CancellationTokenSource();
+    public static CancellationToken token = source.Token;
 
     private static void Main(string[] args)
     {
@@ -27,11 +32,6 @@ internal class Program
         Console.WriteLine(@"                                                                              ");
         Console.WriteLine(@"(c) Joshua Taylor 2023");
         Console.WriteLine();
-
-        Console.CancelKeyPress += delegate
-        {
-            Console.WriteLine(CurrentBoard);
-        };
 
         bool mainLoop = true;
 
@@ -140,6 +140,7 @@ internal class Program
             if (option == 3)
             {
                 Console.WriteLine();
+                /*
                 Console.WriteLine("How many levels do you want to simulate? (-1 for all)");
 
                 string? input;
@@ -149,22 +150,29 @@ internal class Program
                     Console.Write(">");
                     input = Console.ReadLine();
                 } while (int.TryParse(input, out result) && result == 0);
-
+                */
                 
                 // Do the sims
                 Node test = new Node();
                 Board b = Board.DefaultBoard.Clone();
                 test.board = b.Compress();
 
-                GetWins(test, result);
+                //GetWins(test, result);
 
                 Console.WriteLine();
+                RunCalculations();
+                Console.WriteLine();
+                Console.Write("Getting wins... ");
+                GetWins(test);
+                Console.WriteLine("done");
+
                 Console.WriteLine();
                 Console.WriteLine("Final count:");
                 Console.WriteLine("------------");
                 Console.WriteLine("white - " + test.whiteWins);
                 Console.WriteLine("black - " + test.blackWins);
                 Console.WriteLine("stale - " + test.stalemates);
+                Console.WriteLine();
 
                 //(test.whiteWins, test.blackWins, test.stalemates) = GetWins(test);
 
@@ -233,26 +241,162 @@ internal class Program
         return result;
     }
 
+    private static void RunCalculations(int maxLevel = -1)
+    {
+        ConsoleCancelEventHandler handleCtrlC = delegate (object? sender, ConsoleCancelEventArgs e)
+            {
+                e.Cancel = true;
+                source.Cancel();
+            };
+
+        Console.CancelKeyPress += handleCtrlC;
+
+        Node start = new Node(Board.DefaultBoard.Compress());
+
+        List<Node> children = Board.DefaultBoard.CalculateValidBoards().Select(b => new Node(b.Compress())).ToList();
+        List<Task> subtasks = new List<Task>(children.Count);
+        List<Progress<(ulong, ulong, ulong, ulong, ulong, long, int)>> taskProgress =
+            new List<Progress<(ulong, ulong, ulong, ulong, ulong, long, int)>>(children.Count);
+        List<(ulong, ulong, ulong, ulong, ulong, long, int)> progress = new();
+
+        Stopwatch main = new Stopwatch();
+        main.Start();
+
+        Console.WriteLine();
+        Console.Write("Starting threads... ");
+
+        int index = 0;
+        foreach (Node n in children)
+        {
+            int currentIndex = index;
+            progress.Add((0, 0, 0, 0, 0, 0, 0));
+
+            taskProgress.Add(new Progress<(ulong, ulong, ulong, ulong, ulong, long, int)>());
+            taskProgress[currentIndex].ProgressChanged +=  (a, val) => progress[currentIndex] = val;
+
+            subtasks.Add(new Task(new Action(() => GetWins(new Node(n.board), currentIndex, taskProgress[currentIndex], maxLevel)),
+                TaskCreationOptions.LongRunning));
+            subtasks[currentIndex].Start();
+
+            index++;
+        }
+
+        Console.WriteLine("done");
+        Console.WriteLine();
+
+        int countComplete = 0;
+
+        ulong totalLeft = 0;
+        ulong totalCalculated = 0;
+        ulong totalSaved = 0;
+        ulong totalWhiteWins = 0;
+        ulong totalBlackWins = 0;
+        long totalStalemates = 0;
+        int maximumLevel = 0;
+        
+        bool first = true;
+
+        do
+        {
+            countComplete = 0;
+
+            // Skip this check on the first pass
+            if (!first)
+            {
+                foreach (Task t in subtasks)
+                {
+                    countComplete += t.Wait(2000 / children.Count) ? 1 : 0;
+                }
+            }
+
+            totalLeft = 0;
+            totalCalculated = 0;
+            totalSaved = 0;
+            totalWhiteWins = 0;
+            totalBlackWins = 0;
+            totalStalemates = 0;
+
+            if (!first)
+                Console.CursorTop -= children.Count + 7;
+            else
+                first = false;
+
+            Console.WriteLine($"{(children.Count - countComplete),2}/{children.Count} running  -  {main.Elapsed:hh':'mm':'ss}");
+            Console.WriteLine(new string('-', 26));
+            Console.WriteLine();
+            Console.WriteLine("## |    left    |    done    |    save    |  white  |  black  |  stale  | max lev |");
+            Console.WriteLine("---|------------|------------|------------|---------|---------|---------|---------|");
+
+            for (int i = 0; i < progress.Count; i++)
+            {
+                totalLeft += progress[i].Item1;
+                totalCalculated += progress[i].Item2;
+                totalSaved += progress[i].Item3;
+                totalWhiteWins += progress[i].Item4;
+                totalBlackWins += progress[i].Item5;
+                totalStalemates += progress[i].Item6;
+
+                if (progress[i].Item6 > maximumLevel)
+                {
+                    maximumLevel = progress[i].Item7;
+                }
+
+                Console.WriteLine($"{i + 1,2} | {progress[i].Item1,10} | {progress[i].Item2,10} | {progress[i].Item3,10} | " +
+                    $"{progress[i].Item4,7} | {progress[i].Item5,7} | {progress[i].Item6,7} | {progress[i].Item7,7} |");
+            }
+
+            Console.WriteLine("---|------------|------------|------------|---------|---------|---------|---------|");
+            Console.WriteLine($"TT | {totalLeft,10} | {totalCalculated,10} | {totalSaved,10} | " +
+                $"{totalWhiteWins,7} | {totalBlackWins,7} | {totalStalemates,7} | {maximumLevel,7} |");
+
+            // If we cancelled
+            if (token.IsCancellationRequested)
+            {
+                Console.WriteLine();
+                Console.Write("Cancellation Requested. Saving... (00/20)");
+
+                do
+                {
+                    countComplete = 0;
+                    foreach (Task sub in subtasks)
+                    {
+                        countComplete += sub.IsCompleted ? 1 : 0;
+                    }
+
+                    Console.Write(new string('\b', 2 + (2 * 2)) + $"{countComplete:00}/{children.Count:00})");
+                }
+                while (countComplete < children.Count);
+            }
+        }
+        while (countComplete < children.Count);
+
+        Console.WriteLine();
+
+        // Finished with cancel
+        if (token.IsCancellationRequested)
+        {
+            Console.WriteLine("Successfully saved.");
+        }
+        // Finished completely
+        else
+        {
+            Console.WriteLine("Finished calculations!");
+        }
+
+        // Remove the Ctrl-C override
+        Console.CancelKeyPress -= handleCtrlC;
+
+        source = new CancellationTokenSource();
+        token = source.Token;
+    }
+
     /// <summary>
     /// Calculates the percentage of children that lead to a win for white
     /// </summary>
     /// <param name="b"></param>
     /// <returns></returns>
-    private static void GetWins(in Node n, int maxLevel = -1)
+    private static void GetWins(in Node n, int threadNum = -1, IProgress<(ulong, ulong, ulong, ulong, ulong, long, int)> progress = null, int maxLevel = -1)
     {
-        Stack<Node> boardStack = new Stack<Node>();
-        boardStack.Push(n);
-
-        List<ulong> whiteWins = new List<ulong>() { 0 };
-        List<ulong> blackWins = new List<ulong>() { 0 };
-        List<long> stalemates = new List<long>() { 0 };
-
-        Node node;
-
-        bool lastParentWhiteTurn = !(n.board[1] >= 128);
-        int currentLevel = 0;
-        short printed = 0;
-
         ulong totalWhiteWins = 0;
         ulong totalBlackWins = 0;
         long totalStalemates = 0;
@@ -260,11 +404,39 @@ internal class Program
         int mxLevel = 0;
 
         ulong calculated = 0;
+        ulong saved = 0;
 
+        List<ulong> whiteWins = new List<ulong>() { 0 };
+        List<ulong> blackWins = new List<ulong>() { 0 };
+        List<long> stalemates = new List<long>() { 0 };
+
+        Node node;
+        Board CurrentBoard = new();
+
+        bool lastParentWhiteTurn = !(n.board[1] >= 128);
+        int currentLevel = 0;
+
+        // Attempt to load nodes from disk
+        if (!LoadNodes($"chess\\thread{threadNum}.stack", out Stack<Node> boardStack,
+                ref calculated, ref saved, ref totalWhiteWins, ref totalBlackWins, ref totalStalemates, ref mxLevel,
+                ref whiteWins, ref blackWins, ref stalemates, ref lastParentWhiteTurn, ref currentLevel))
+            boardStack.Push(n);
+
+        // Run till the stack's empty
         while (boardStack.Count > 0)
         {
+            // Check if we tried to cancel
+            if (token.IsCancellationRequested)
+            {
+                // Save our stack and exit
+                SaveNodes($"chess\\thread{threadNum}.stack", boardStack, ref calculated, ref saved,
+                    ref totalWhiteWins, ref totalBlackWins, ref totalStalemates, ref mxLevel,
+                    ref whiteWins, ref blackWins, ref stalemates, ref lastParentWhiteTurn, ref currentLevel);
+
+                break;
+            }
+
             node = boardStack.Pop();
-            calculated++;
 
             // If we're the same color as the last parent, we are the parent
             if (node.board[1] >= 128 == lastParentWhiteTurn)
@@ -281,11 +453,15 @@ internal class Program
                 blackWins[currentLevel] += node.blackWins;
                 stalemates[currentLevel] += node.stalemates;
 
-                string toPrint = $"{boardStack.Count} left, {calculated} done - w: {totalWhiteWins}, b: {totalBlackWins}, s: {totalStalemates} - max lev: {mxLevel}";
-                Console.Write(new string('\b', printed) + toPrint);
-                printed = (short)toPrint.Length;
+                progress?.Report(((ulong)boardStack.Count, calculated, saved, totalWhiteWins, totalBlackWins, totalStalemates, mxLevel));
+                //string toPrint = $"{boardStack.Count} left, {calculated} done - w: {totalWhiteWins}, b: {totalBlackWins}, s: {totalStalemates} - max lev: {mxLevel}";
+                //Console.Write(new string('\b', printed) + toPrint);
+                //printed = (short)toPrint.Length;
                 continue;
             }
+
+            // Don't count parents as calculated because they've already been calculated
+            calculated++;
 
             //Console.WriteLine($"Level: {level}");
             // Find or create our node first to make sure we have an updated node from the database
@@ -296,6 +472,7 @@ internal class Program
                 if (node.stalemates == -2)
                 {
                     //Console.WriteLine("Parental reference");
+                    saved++;
                     continue;
                     //return (0, 0, 0);
                 }
@@ -308,6 +485,7 @@ internal class Program
                     whiteWins[currentLevel] += node.whiteWins;
                     blackWins[currentLevel] += node.blackWins;
                     stalemates[currentLevel] += node.stalemates;
+                    saved++;
                     continue;
                     //return (node.whiteWins, node.blackWins, node.stalemates);
                 }
@@ -853,126 +1031,137 @@ internal class Program
         byte[] lastLine = new byte[60];
         Span<byte> readSpan = new Span<byte>(lastLine, 0, 60);
         ReadOnlySpan<byte> writeSpan = new ReadOnlySpan<byte>(newLine, 0, 60);
-        byte[] winBytes;
+        byte[] winBytes = new byte[8];
+        Span<byte> winSpan = new Span<byte>(winBytes, 0, 8);
 
         // Check if the exact board is there
-        using (FileStream fs = new FileStream(path, FileMode.OpenOrCreate))
+        FileStream fs = null;
+
+        bool success = false;
+        while (!success)
         {
-            while (fs.Position < fs.Length)
+            try
             {
-                // 36 bytes of pieces
-                for (read = 0; read < 36; read++)
-                {
-                    b = (byte)fs.ReadByte();
-                    if (b != node.board[read + 3])
-                    {
-                        past = b > node.board[read + 3];
-                        read++;
-                        break;
-                    }
-                }
-                // If we didn't match the whole board
-                if (read != 36)
-                {
-                    // Did we pass where we should be
-                    if (past)
-                    {
-                        // Go back to start
-                        fs.Seek(-read, SeekOrigin.Current);
+                fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                success = true;
+            }
+            catch { }
+        }
 
-                        // Build new line
-                        for (read = 0; read < 36; read++)
-                        {
-                            newLine[read] = node.board[read + 3];
-                        }
-                        winBytes = BitConverter.GetBytes(node.whiteWins);
-                        for (read = 0; read < 8; read++)
-                        {
-                            newLine[36 + read] = winBytes[read];
-                        }
-                        winBytes = BitConverter.GetBytes(node.blackWins);
-                        for (read = 0; read < 8; read++)
-                        {
-                            newLine[44 + read] = winBytes[read];
-                        }
-                        winBytes = BitConverter.GetBytes(node.stalemates);
-                        for (read = 0; read < 8; read++)
-                        {
-                            newLine[52 + read] = winBytes[read];
-                        }
+        if (fs == null)
+            throw new IOException("Failed to open file");
 
-                        // Insert into where we belong
-                        while (fs.Position < fs.Length)
-                        {
-                            fs.Read(readSpan);
-                            fs.Seek(-60, SeekOrigin.Current);
-                            fs.Write(writeSpan);
-                            for (read = 0; read < 60; read++)
-                            {
-                                newLine[read] = lastLine[read];
-                            }
-                        }
-                        fs.Write(writeSpan);
-                        break;
-                    }
-                    // Didn't pass insertion point, move to next line
-                    else
-                    {
-                        fs.Seek(60 - read, SeekOrigin.Current);
-                    }
-                }
-                // Found the line
-                else
+        while (fs.Position < fs.Length)
+        {
+            // 36 bytes of pieces
+            for (read = 0; read < 36; read++)
+            {
+                b = (byte)fs.ReadByte();
+                if (b != node.board[read + 3])
                 {
-                    found = true;
-
-                    winBytes = new byte[8];
-                    for (read = 0; read < 8; read++)
-                    {
-                        winBytes[read] = (byte)fs.ReadByte();
-                    }
-                    node.whiteWins = BitConverter.ToUInt64(winBytes);
-                    for (read = 0; read < 8; read++)
-                    {
-                        winBytes[read] = (byte)fs.ReadByte();
-                    }
-                    node.blackWins = BitConverter.ToUInt64(winBytes);
-                    for (read = 0; read < 8; read++)
-                    {
-                        winBytes[read] = (byte)fs.ReadByte();
-                    }
-                    node.stalemates = BitConverter.ToInt64(winBytes);
+                    past = b > node.board[read + 3];
+                    read++;
                     break;
                 }
             }
-
-            // If we're at the end of the file and we didn't find it in there
-            if (!found && !past)
+            // If we didn't match the whole board
+            if (read != 36)
             {
-                // Build the new line
-                for (read = 0; read < 36; read++)
+                // Did we pass where we should be
+                if (past)
                 {
-                    newLine[read] = node.board[read + 3];
-                }
-                winBytes = BitConverter.GetBytes(node.whiteWins);
-                for (read = 0; read < 8; read++)
-                {
-                    newLine[36 + read] = winBytes[read];
-                }
-                winBytes = BitConverter.GetBytes(node.blackWins);
-                for (read = 0; read < 8; read++)
-                {
-                    newLine[44 + read] = winBytes[read];
-                }
-                winBytes = BitConverter.GetBytes(node.stalemates);
-                for (read = 0; read < 8; read++)
-                {
-                    newLine[52 + read] = winBytes[read];
-                }
+                    // Go back to start
+                    fs.Seek(-read, SeekOrigin.Current);
 
-                fs.Write(writeSpan);
+                    // Build new line
+                    for (read = 0; read < 36; read++)
+                    {
+                        newLine[read] = node.board[read + 3];
+                    }
+                    winBytes = BitConverter.GetBytes(node.whiteWins);
+                    for (read = 0; read < 8; read++)
+                    {
+                        newLine[36 + read] = winBytes[read];
+                    }
+                    winBytes = BitConverter.GetBytes(node.blackWins);
+                    for (read = 0; read < 8; read++)
+                    {
+                        newLine[44 + read] = winBytes[read];
+                    }
+                    winBytes = BitConverter.GetBytes(node.stalemates);
+                    for (read = 0; read < 8; read++)
+                    {
+                        newLine[52 + read] = winBytes[read];
+                    }
+
+                    // Insert into where we belong
+                    while (fs.Position < fs.Length)
+                    {
+                        fs.Read(readSpan);
+                        fs.Seek(-60, SeekOrigin.Current);
+                        fs.Write(writeSpan);
+                        for (read = 0; read < 60; read++)
+                        {
+                            newLine[read] = lastLine[read];
+                        }
+                    }
+                    fs.Write(writeSpan);
+                    break;
+                }
+                // Didn't pass insertion point, move to next line
+                else
+                {
+                    fs.Seek(60 - read, SeekOrigin.Current);
+                }
+            }
+            // Found the line
+            else
+            {
+                found = true;
+
+                winBytes = new byte[8];
+                fs.Read(winSpan);
+                node.whiteWins = BitConverter.ToUInt64(winBytes);
+                fs.Read(winSpan);
+                node.blackWins = BitConverter.ToUInt64(winBytes);
+                fs.Read(winSpan);
+                /*for (read = 0; read < 8; read++)
+                {
+                    winBytes[read] = (byte)fs.ReadByte();
+                }*/
+                node.stalemates = BitConverter.ToInt64(winBytes);
+                break;
             }
         }
+
+        // If we're at the end of the file and we didn't find it in there
+        if (!found && !past)
+        {
+            // Build the new line
+            for (read = 0; read < 36; read++)
+            {
+                newLine[read] = node.board[read + 3];
+            }
+            winBytes = BitConverter.GetBytes(node.whiteWins);
+            for (read = 0; read < 8; read++)
+            {
+                newLine[36 + read] = winBytes[read];
+            }
+            winBytes = BitConverter.GetBytes(node.blackWins);
+            for (read = 0; read < 8; read++)
+            {
+                newLine[44 + read] = winBytes[read];
+            }
+            winBytes = BitConverter.GetBytes(node.stalemates);
+            for (read = 0; read < 8; read++)
+            {
+                newLine[52 + read] = winBytes[read];
+            }
+
+            fs.Write(writeSpan);
+        }
+
+        fs.Close();
 
         return found;
     }
@@ -991,48 +1180,63 @@ internal class Program
         int b;
         bool past = false;
         bool found = false;
-        byte[] winBytes;
+        byte[] winBytes = new byte[8];
 
         // Check if the exact board is there
-        using (FileStream fs = new FileStream(path, FileMode.OpenOrCreate))
-        {
-            while (fs.Position < fs.Length)
-            {
-                // 36 bytes of pieces
-                for (read = 0; read < 36; read++)
-                {
-                    b = (byte)fs.ReadByte();
-                    if (b != node.board[read + 3])
-                    {
-                        past = b > node.board[read + 3];
-                        read++;
-                        break;
-                    }
-                }
-                // If we didn't match the whole board
-                if (read == 36)
-                {
-                    found = true;
+        FileStream fs = null;
 
-                    winBytes = BitConverter.GetBytes(whiteWins);
-                    fs.Write(winBytes, 0, 8);
-                    winBytes = BitConverter.GetBytes(blackWins);
-                    fs.Write(winBytes, 0, 8);
-                    winBytes = BitConverter.GetBytes(stalemates);
-                    fs.Write(winBytes, 0, 8);
+        bool success = false;
+        while (!success)
+        {
+            try
+            {
+                fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                success = true;
+            }
+            catch { }
+        }
+
+        if (fs == null)
+            throw new IOException("Failed to open file");
+
+        while (fs.Position < fs.Length)
+        {
+            // 36 bytes of pieces
+            for (read = 0; read < 36; read++)
+            {
+                b = (byte)fs.ReadByte();
+                if (b != node.board[read + 3])
+                {
+                    past = b > node.board[read + 3];
+                    read++;
                     break;
                 }
-                else
-                {
-                    // We're not going to find it if we've past it already
-                    if (past)
-                        break;
+            }
+            // If we didn't match the whole board
+            if (read == 36)
+            {
+                found = true;
 
-                    // Skip forward to the next section
-                    fs.Seek(60 - read, SeekOrigin.Current);
-                }
+                winBytes = BitConverter.GetBytes(whiteWins);
+                fs.Write(winBytes, 0, 8);
+                winBytes = BitConverter.GetBytes(blackWins);
+                fs.Write(winBytes, 0, 8);
+                winBytes = BitConverter.GetBytes(stalemates);
+                fs.Write(winBytes, 0, 8);
+                break;
+            }
+            else
+            {
+                // We're not going to find it if we've past it already
+                if (past)
+                    break;
+
+                // Skip forward to the next section
+                fs.Seek(60 - read, SeekOrigin.Current);
             }
         }
+
+        fs.Close();
 
         return found;
     }
@@ -1065,104 +1269,156 @@ internal class Program
         return path;
     }
 
-    /*
-    private static void LoadNodes(out SortedSet<Node> nodes)
+    private static bool LoadNodes(string path, out Stack<Node> nodes,
+                ref ulong calculated, ref ulong saved, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
+                ref List<ulong> whiteWins, ref List<ulong> blackWins, ref List<long> stalemates, ref bool lastParentWhiteTurn, ref int currentLevel)
     {
-        nodes = new SortedSet<Node>(new NodeComparer());
+        nodes = new Stack<Node>();
 
-        if (!File.Exists(NodeFile))
-            return;
+        if (!File.Exists(path))
+            return false;
 
-        FileInfo fi = new FileInfo(NodeFile);
+        FileInfo fi = new FileInfo(path);
         long length = fi.Length;
-
-        Console.Write("Reading... 00%");
 
         ulong num = 0;
         long startIndex = 0;
 
-        using (StreamReader sr = new StreamReader(NodeFile))
+        // Console.Write("Reading... 00%");
+
+        using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
-            char[] board = new char[39];
-            char[] address = new char[8];
-            char[] level = new char[2];
-            byte childCountIsEnd = 0;
+            byte[] board = new byte[39];
+            byte[] longBytes = new byte[8];
+            byte[] intBytes = new byte[4];
 
-            char[] child = new char[8];
+            fs.Read(longBytes, 0, 8);
+            calculated = BitConverter.ToUInt64(longBytes);
+            fs.Read(longBytes, 0, 8);
+            saved = BitConverter.ToUInt64(longBytes);
+            fs.Read(longBytes, 0, 8);
+            totalWhiteWins = BitConverter.ToUInt64(longBytes);
+            fs.Read(longBytes, 0, 8);
+            totalBlackWins = BitConverter.ToUInt64(longBytes);
+            fs.Read(longBytes, 0, 8);
+            totalStalemates = BitConverter.ToInt64(longBytes);
+            fs.Read(intBytes, 0, 4);
+            mxLevel = BitConverter.ToInt32(intBytes);
+            fs.Read(intBytes, 0, 4);
+            currentLevel = BitConverter.ToInt32(intBytes);
 
-            while (!sr.EndOfStream)
+            lastParentWhiteTurn = fs.ReadByte() == 1;
+
+            whiteWins.Clear();
+            blackWins.Clear();
+            stalemates.Clear();
+
+            for (int i = 0; i < currentLevel + 1; i++)
+            {
+                fs.Read(longBytes, 0, 8);
+                whiteWins.Add(BitConverter.ToUInt64(longBytes));
+                fs.Read(longBytes, 0, 8);
+                blackWins.Add(BitConverter.ToUInt64(longBytes));
+                fs.Read(longBytes, 0, 8);
+                stalemates.Add(BitConverter.ToInt64(longBytes));
+            }
+
+            while (fs.Position < fs.Length)
             {
                 Node n = new();
 
-                sr.Read(board, 0, 39);
-                sr.Read(address, 0, 8);
-                sr.Read(level, 0, 2);
-                childCountIsEnd = (byte)sr.Read();
+                fs.Read(n.board, 0, 39);
 
-                n.board = board.Select(c => (byte)c).ToArray();
-                n.address = BitConverter.ToUInt64(address.Select(c => (byte)c).ToArray());
-                n.level = BitConverter.ToUInt16(level.Select(c => (byte)c).ToArray());
-                n.isEnd = childCountIsEnd >= 128;
-                byte childCount = (byte)(childCountIsEnd - (n.isEnd ? 128 : 0));
+                fs.Read(longBytes, 0, 8);
+                n.whiteWins = BitConverter.ToUInt64(longBytes);
+                fs.Read(longBytes, 0, 8);
+                n.blackWins = BitConverter.ToUInt64(longBytes);
+                fs.Read(longBytes, 0, 8);
+                n.stalemates = BitConverter.ToInt64(longBytes);
 
-                for (int i = 0; i < childCount; i++)
-                {
-                    sr.Read(child, 0, 8);
-                    n.children.Add(BitConverter.ToUInt64(child.Select(c => (byte)c).ToArray()));
-                }
-
-                nodes.Add(n);
+                nodes.Push(n);
 
                 if (num % 10000 == 0)
                 {
-                    Console.Write($"\b\b\b{Math.Floor((double)startIndex / length * 100.0):00}%");
+                    //Console.Write($"\b\b\b{Math.Floor((double)startIndex / length * 100.0):00}%");
                 }
                 num++;
 
-                startIndex += 50 + childCount * 8;
+                startIndex += 63;
             }
         }
         GC.Collect();
 
-        Console.WriteLine("\b\b\b100%");
+        //Console.WriteLine("\b\b\b100%");
+
+        return true;
     }
 
-    private static void SaveNodes(in SortedSet<Node> nodes)
+    private static void SaveNodes(string path, in Stack<Node> nodes,
+                ref ulong calculated, ref ulong saved, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
+                ref List<ulong> whiteWins, ref List<ulong> blackWins, ref List<long> stalemates, ref bool lastParentWhiteTurn, ref int currentLevel)
     {
         ulong num = 0;
-        Console.Write("Saving... 00%");
+        //Console.Write("Saving... 00%");
 
-        using (StreamWriter sw = new StreamWriter(NodeFile))
+        using (FileStream fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
         {
-            foreach (Node node in nodes)
+            byte[] board = new byte[39];
+            byte[] longBytes = new byte[8];
+            byte[] intBytes = new byte[4];
+
+            longBytes = BitConverter.GetBytes(calculated);
+            fs.Write(longBytes, 0, 8);
+            longBytes = BitConverter.GetBytes(saved);
+            fs.Write(longBytes, 0, 8);
+            longBytes = BitConverter.GetBytes(totalWhiteWins);
+            fs.Write(longBytes, 0, 8);
+            longBytes = BitConverter.GetBytes(totalBlackWins);
+            fs.Write(longBytes, 0, 8);
+            longBytes = BitConverter.GetBytes(totalStalemates);
+            fs.Write(longBytes, 0, 8);
+            intBytes = BitConverter.GetBytes(mxLevel);
+            fs.Write(intBytes, 0, 4);
+            intBytes = BitConverter.GetBytes(currentLevel);
+            fs.Write(intBytes, 0, 4);
+
+            fs.WriteByte((byte)(lastParentWhiteTurn ? 1 : 0));
+
+            for (int i = 0; i < currentLevel + 1; i++)
             {
-                string line = new string(node.board.Select(c => (char)c).ToArray());
-                line += new string(BitConverter.GetBytes(node.address).Select(c => (char)c).ToArray());
-                line += new string(BitConverter.GetBytes(node.level).Select(c => (char)c).ToArray());
-                line += (char)((node.isEnd ? 128 : 0) + node.children.Count);
+                longBytes = BitConverter.GetBytes(whiteWins[i]);
+                fs.Write(longBytes, 0, 8);
+                longBytes = BitConverter.GetBytes(blackWins[i]);
+                fs.Write(longBytes, 0, 8);
+                longBytes = BitConverter.GetBytes(stalemates[i]);
+                fs.Write(longBytes, 0, 8);
+            }
 
-                if (node.children.Count > 127)
-                    throw new Exception("Too many children");
+            // Now the whole stack
+            foreach (Node n in nodes.Reverse())
+            {
+                fs.Write(n.board, 0, 39);
 
-                foreach (ulong child in node.children)
-                {
-                    line += new string(BitConverter.GetBytes(child).Select(c => (char)c).ToArray());
-                }
-
-                sw.Write(line);
+                longBytes = BitConverter.GetBytes(n.whiteWins);
+                fs.Write(longBytes, 0, 8);
+                longBytes = BitConverter.GetBytes(n.blackWins);
+                fs.Write(longBytes, 0, 8);
+                longBytes = BitConverter.GetBytes(n.stalemates);
+                fs.Write(longBytes, 0, 8);
 
                 if (num % 10000 == 0)
                 {
-                    Console.Write($"\b\b\b{Math.Floor((double)num / nodes.Count * 100.0):00}%");
+                    //Console.Write($"\b\b\b{Math.Floor((double)num / nodes.Count * 100.0):00}%");
                 }
                 num++;
             }
         }
+        GC.Collect();
 
-        Console.WriteLine("\b\b\b100%");
-        num = 0;
+        //Console.WriteLine("\b\b\b100%");
     }
 
+    /*
     private static (int, int) LoadProgressiveState()
     {
         if (!File.Exists(StateFile))
