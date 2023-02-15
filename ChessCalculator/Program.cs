@@ -157,7 +157,7 @@ internal class Program
                 Board b = Board.DefaultBoard.Clone();
                 test.board = b.Compress();
 
-                //GetWins(test, result);
+                FindOrCreateNode(test);
 
                 Console.WriteLine();
                 RunCalculations();
@@ -324,7 +324,7 @@ internal class Program
             Console.WriteLine($"{(children.Count - countComplete),2}/{children.Count} running  -  {main.Elapsed:hh':'mm':'ss}");
             Console.WriteLine(new string('-', 26));
             Console.WriteLine();
-            Console.WriteLine("## |    left    |    done    |    save    |  white  |  black  |  stale  | max lev |");
+            Console.WriteLine("## |    left    |    done    |    skip    |  white  |  black  |  stale  | max lev |");
             Console.WriteLine("---|------------|------------|------------|---------|---------|---------|---------|");
 
             for (int i = 0; i < progress.Count; i++)
@@ -336,7 +336,7 @@ internal class Program
                 totalBlackWins += progress[i].Item5;
                 totalStalemates += progress[i].Item6;
 
-                if (progress[i].Item6 > maximumLevel)
+                if (progress[i].Item7 > maximumLevel)
                 {
                     maximumLevel = progress[i].Item7;
                 }
@@ -404,7 +404,7 @@ internal class Program
         int mxLevel = 0;
 
         ulong calculated = 0;
-        ulong saved = 0;
+        ulong skipped = 0;
 
         List<ulong> whiteWins = new List<ulong>() { 0 };
         List<ulong> blackWins = new List<ulong>() { 0 };
@@ -418,7 +418,7 @@ internal class Program
 
         // Attempt to load nodes from disk
         if (!LoadNodes($"chess\\thread{threadNum}.stack", out Stack<Node> boardStack,
-                ref calculated, ref saved, ref totalWhiteWins, ref totalBlackWins, ref totalStalemates, ref mxLevel,
+                ref calculated, ref skipped, ref totalWhiteWins, ref totalBlackWins, ref totalStalemates, ref mxLevel,
                 ref whiteWins, ref blackWins, ref stalemates, ref lastParentWhiteTurn, ref currentLevel))
             boardStack.Push(n);
 
@@ -429,7 +429,7 @@ internal class Program
             if (token.IsCancellationRequested)
             {
                 // Save our stack and exit
-                SaveNodes($"chess\\thread{threadNum}.stack", boardStack, ref calculated, ref saved,
+                SaveNodes($"chess\\thread{threadNum}.stack", boardStack, ref calculated, ref skipped,
                     ref totalWhiteWins, ref totalBlackWins, ref totalStalemates, ref mxLevel,
                     ref whiteWins, ref blackWins, ref stalemates, ref lastParentWhiteTurn, ref currentLevel);
 
@@ -453,15 +453,14 @@ internal class Program
                 blackWins[currentLevel] += node.blackWins;
                 stalemates[currentLevel] += node.stalemates;
 
-                progress?.Report(((ulong)boardStack.Count, calculated, saved, totalWhiteWins, totalBlackWins, totalStalemates, mxLevel));
+                calculated++;
+
+                progress?.Report(((ulong)boardStack.Count, calculated, skipped, totalWhiteWins, totalBlackWins, totalStalemates, mxLevel));
                 //string toPrint = $"{boardStack.Count} left, {calculated} done - w: {totalWhiteWins}, b: {totalBlackWins}, s: {totalStalemates} - max lev: {mxLevel}";
                 //Console.Write(new string('\b', printed) + toPrint);
                 //printed = (short)toPrint.Length;
                 continue;
             }
-
-            // Don't count parents as calculated because they've already been calculated
-            calculated++;
 
             //Console.WriteLine($"Level: {level}");
             // Find or create our node first to make sure we have an updated node from the database
@@ -472,7 +471,7 @@ internal class Program
                 if (node.stalemates == -2)
                 {
                     //Console.WriteLine("Parental reference");
-                    saved++;
+                    skipped++;
                     continue;
                     //return (0, 0, 0);
                 }
@@ -485,7 +484,7 @@ internal class Program
                     whiteWins[currentLevel] += node.whiteWins;
                     blackWins[currentLevel] += node.blackWins;
                     stalemates[currentLevel] += node.stalemates;
-                    saved++;
+                    skipped++;
                     continue;
                     //return (node.whiteWins, node.blackWins, node.stalemates);
                 }
@@ -530,6 +529,7 @@ internal class Program
                     totalWhiteWins++;
                     //return (1, 0, 0);
                 }
+                calculated++;
                 continue;
             }
 
@@ -1029,10 +1029,7 @@ internal class Program
         bool found = false;
         byte[] newLine = new byte[60];
         byte[] lastLine = new byte[60];
-        Span<byte> readSpan = new Span<byte>(lastLine, 0, 60);
-        ReadOnlySpan<byte> writeSpan = new ReadOnlySpan<byte>(newLine, 0, 60);
         byte[] winBytes = new byte[8];
-        Span<byte> winSpan = new Span<byte>(winBytes, 0, 8);
 
         // Check if the exact board is there
         FileStream fs = null;
@@ -1097,15 +1094,15 @@ internal class Program
                     // Insert into where we belong
                     while (fs.Position < fs.Length)
                     {
-                        fs.Read(readSpan);
+                        fs.Read(lastLine, 0, 60);
                         fs.Seek(-60, SeekOrigin.Current);
-                        fs.Write(writeSpan);
+                        fs.Write(newLine, 0, 60);
                         for (read = 0; read < 60; read++)
                         {
                             newLine[read] = lastLine[read];
                         }
                     }
-                    fs.Write(writeSpan);
+                    fs.Write(newLine, 0, 60);
                     break;
                 }
                 // Didn't pass insertion point, move to next line
@@ -1120,11 +1117,11 @@ internal class Program
                 found = true;
 
                 winBytes = new byte[8];
-                fs.Read(winSpan);
+                fs.Read(winBytes, 0, 8);
                 node.whiteWins = BitConverter.ToUInt64(winBytes);
-                fs.Read(winSpan);
+                fs.Read(winBytes, 0, 8);
                 node.blackWins = BitConverter.ToUInt64(winBytes);
-                fs.Read(winSpan);
+                fs.Read(winBytes, 0, 8);
                 /*for (read = 0; read < 8; read++)
                 {
                     winBytes[read] = (byte)fs.ReadByte();
@@ -1158,7 +1155,7 @@ internal class Program
                 newLine[52 + read] = winBytes[read];
             }
 
-            fs.Write(writeSpan);
+            fs.Write(newLine, 0, 60);
         }
 
         fs.Close();
@@ -1270,7 +1267,7 @@ internal class Program
     }
 
     private static bool LoadNodes(string path, out Stack<Node> nodes,
-                ref ulong calculated, ref ulong saved, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
+                ref ulong calculated, ref ulong skipped, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
                 ref List<ulong> whiteWins, ref List<ulong> blackWins, ref List<long> stalemates, ref bool lastParentWhiteTurn, ref int currentLevel)
     {
         nodes = new Stack<Node>();
@@ -1295,7 +1292,7 @@ internal class Program
             fs.Read(longBytes, 0, 8);
             calculated = BitConverter.ToUInt64(longBytes);
             fs.Read(longBytes, 0, 8);
-            saved = BitConverter.ToUInt64(longBytes);
+            skipped = BitConverter.ToUInt64(longBytes);
             fs.Read(longBytes, 0, 8);
             totalWhiteWins = BitConverter.ToUInt64(longBytes);
             fs.Read(longBytes, 0, 8);
@@ -1355,7 +1352,7 @@ internal class Program
     }
 
     private static void SaveNodes(string path, in Stack<Node> nodes,
-                ref ulong calculated, ref ulong saved, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
+                ref ulong calculated, ref ulong skipped, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
                 ref List<ulong> whiteWins, ref List<ulong> blackWins, ref List<long> stalemates, ref bool lastParentWhiteTurn, ref int currentLevel)
     {
         ulong num = 0;
@@ -1369,7 +1366,7 @@ internal class Program
 
             longBytes = BitConverter.GetBytes(calculated);
             fs.Write(longBytes, 0, 8);
-            longBytes = BitConverter.GetBytes(saved);
+            longBytes = BitConverter.GetBytes(skipped);
             fs.Write(longBytes, 0, 8);
             longBytes = BitConverter.GetBytes(totalWhiteWins);
             fs.Write(longBytes, 0, 8);
