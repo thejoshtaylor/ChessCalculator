@@ -162,8 +162,8 @@ internal class Program
                 Console.WriteLine();
                 RunCalculations();
                 Console.WriteLine();
-                Console.Write("Getting wins... ");
-                GetWins(test);
+                Console.Write("Getting start... ");
+                FindOrCreateNode(test);
                 Console.WriteLine("done");
 
                 Console.WriteLine();
@@ -417,7 +417,7 @@ internal class Program
         int currentLevel = 0;
 
         // Attempt to load nodes from disk
-        if (!LoadNodes($"chess\\thread{threadNum}.stack", out Stack<Node> boardStack,
+        if (!LoadNodes($"chess\\thread{threadNum}.stack", out Stack<Node> boardStack, out Stack<Node> directLine,
                 ref calculated, ref skipped, ref totalWhiteWins, ref totalBlackWins, ref totalStalemates, ref mxLevel,
                 ref whiteWins, ref blackWins, ref stalemates, ref lastParentWhiteTurn, ref currentLevel))
             boardStack.Push(n);
@@ -426,10 +426,10 @@ internal class Program
         while (boardStack.Count > 0)
         {
             // Check if we tried to cancel
-            if (token.IsCancellationRequested)
+            if (threadNum != -1 && token.IsCancellationRequested)
             {
                 // Save our stack and exit
-                SaveNodes($"chess\\thread{threadNum}.stack", boardStack, ref calculated, ref skipped,
+                SaveNodes($"chess\\thread{threadNum}.stack", boardStack, directLine, ref calculated, ref skipped,
                     ref totalWhiteWins, ref totalBlackWins, ref totalStalemates, ref mxLevel,
                     ref whiteWins, ref blackWins, ref stalemates, ref lastParentWhiteTurn, ref currentLevel);
 
@@ -442,16 +442,22 @@ internal class Program
             if (node.board[1] >= 128 == lastParentWhiteTurn)
             {
                 UpdateNodeWins(node, whiteWins[currentLevel], blackWins[currentLevel], stalemates[currentLevel]);
+
                 whiteWins.RemoveAt(currentLevel);
                 blackWins.RemoveAt(currentLevel);
                 stalemates.RemoveAt(currentLevel);
+                
                 lastParentWhiteTurn = !lastParentWhiteTurn;
+
                 if (currentLevel > mxLevel)
                     mxLevel = currentLevel;
                 currentLevel--;
+
                 whiteWins[currentLevel] += node.whiteWins;
                 blackWins[currentLevel] += node.blackWins;
                 stalemates[currentLevel] += node.stalemates;
+
+                directLine.Pop();
 
                 calculated++;
 
@@ -470,15 +476,28 @@ internal class Program
                 // We have an uncalculated node, it's self-referential
                 if (node.stalemates == -2)
                 {
+                    bool isParent = false;
+                    foreach (Node parent in directLine)
+                    {
+                        if (node.CompareTo(parent) == 0)
+                        {
+                            isParent = true;
+                            break;
+                        }
+                    }
+                    // Only skip if it's in the direct lineage
+                    if (isParent)
+                    {
+                        skipped++;
+                        continue;
+                    }
                     //Console.WriteLine("Parental reference");
-                    skipped++;
-                    continue;
                     //return (0, 0, 0);
                 }
                 // Not yet calculated
                 else if (node.stalemates == -1)
                 { }
-                // Calculated node
+                // Already calculated node
                 else
                 {
                     whiteWins[currentLevel] += node.whiteWins;
@@ -544,6 +563,7 @@ internal class Program
 
             // If we make it to this point, this node depends on the children, so make sure to put it back on the stack
             boardStack.Push(node);
+            directLine.Push(node);
 
             // Flip this value to ensure that we assign the children to the proper parent
             lastParentWhiteTurn = !lastParentWhiteTurn;
@@ -1266,11 +1286,12 @@ internal class Program
         return path;
     }
 
-    private static bool LoadNodes(string path, out Stack<Node> nodes,
+    private static bool LoadNodes(string path, out Stack<Node> nodes, out Stack<Node> directLine,
                 ref ulong calculated, ref ulong skipped, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
                 ref List<ulong> whiteWins, ref List<ulong> blackWins, ref List<long> stalemates, ref bool lastParentWhiteTurn, ref int currentLevel)
     {
         nodes = new Stack<Node>();
+        directLine = new Stack<Node>();
 
         if (!File.Exists(path))
             return false;
@@ -1320,6 +1341,24 @@ internal class Program
                 stalemates.Add(BitConverter.ToInt64(longBytes));
             }
 
+            // Read all the direct line nodes
+            for (int i = 0; i < currentLevel; i++)
+            {
+                Node directLineNode = new();
+
+                fs.Read(directLineNode.board, 0, 39);
+
+                fs.Read(longBytes, 0, 8);
+                directLineNode.whiteWins = BitConverter.ToUInt64(longBytes);
+                fs.Read(longBytes, 0, 8);
+                directLineNode.blackWins = BitConverter.ToUInt64(longBytes);
+                fs.Read(longBytes, 0, 8);
+                directLineNode.stalemates = BitConverter.ToInt64(longBytes);
+
+                directLine.Push(directLineNode);
+            }
+
+            // Read all nodes
             while (fs.Position < fs.Length)
             {
                 Node n = new();
@@ -1351,7 +1390,7 @@ internal class Program
         return true;
     }
 
-    private static void SaveNodes(string path, in Stack<Node> nodes,
+    private static void SaveNodes(string path, in Stack<Node> nodes, in Stack<Node> directLine,
                 ref ulong calculated, ref ulong skipped, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
                 ref List<ulong> whiteWins, ref List<ulong> blackWins, ref List<long> stalemates, ref bool lastParentWhiteTurn, ref int currentLevel)
     {
@@ -1388,6 +1427,19 @@ internal class Program
                 longBytes = BitConverter.GetBytes(blackWins[i]);
                 fs.Write(longBytes, 0, 8);
                 longBytes = BitConverter.GetBytes(stalemates[i]);
+                fs.Write(longBytes, 0, 8);
+            }
+
+            // Add the direct line stack
+            foreach (Node dl in directLine.Reverse())
+            {
+                fs.Write(dl.board, 0, 39);
+
+                longBytes = BitConverter.GetBytes(dl.whiteWins);
+                fs.Write(longBytes, 0, 8);
+                longBytes = BitConverter.GetBytes(dl.blackWins);
+                fs.Write(longBytes, 0, 8);
+                longBytes = BitConverter.GetBytes(dl.stalemates);
                 fs.Write(longBytes, 0, 8);
             }
 
