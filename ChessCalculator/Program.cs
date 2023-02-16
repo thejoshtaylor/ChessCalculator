@@ -529,26 +529,37 @@ internal class Program
             // No moves available
             if (boards.Count == 0)
             {
-                // White doesn't have any moves
-                if (CurrentBoard.whiteTurn)
+                // Checkmate win if we're in check
+                if (CurrentBoard.IsInCheck(CurrentBoard.whiteTurn))
                 {
-                    // Black wins
-                    //Console.WriteLine("Black Wins");
-                    UpdateNodeWins(node, 0, 1, 0);
-                    blackWins[currentLevel]++;
-                    totalBlackWins++;
-                    //return (0, 1, 0);
+                    // White doesn't have any moves
+                    if (CurrentBoard.whiteTurn)
+                    {
+                        // Black wins
+                        //Console.WriteLine("Black Wins");
+                        UpdateNodeWins(node, 0, 1, 0);
+                        blackWins[currentLevel]++;
+                        totalBlackWins++;
+                        //return (0, 1, 0);
+                    }
+                    else
+                    {
+                        // White wins
+                        //Console.WriteLine("White Wins");
+                        UpdateNodeWins(node, 1, 0, 0);
+                        whiteWins[currentLevel] = whiteWins[currentLevel] + 1;
+                        totalWhiteWins++;
+                        //return (1, 0, 0);
+                    }
+                    calculated++;
                 }
+                // Stalemate if we're not in check
                 else
                 {
-                    // White wins
-                    //Console.WriteLine("White Wins");
-                    UpdateNodeWins(node, 1, 0, 0);
-                    whiteWins[currentLevel] = whiteWins[currentLevel] + 1;
-                    totalWhiteWins++;
-                    //return (1, 0, 0);
+                    UpdateNodeWins(node, 0, 0, 1);
+                    stalemates[currentLevel]++;
+                    totalStalemates++;
                 }
-                calculated++;
                 continue;
             }
 
