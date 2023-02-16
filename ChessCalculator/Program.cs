@@ -1133,7 +1133,7 @@ internal class Program
             if (!found)
             {
                 // Didn't find, break out
-                if (high == low)
+                if (high <= low)
                 {
                     break;
                 }
@@ -1409,10 +1409,8 @@ internal class Program
             if (!found)
             {
                 // Didn't find, break out
-                if (high == low)
+                if (high <= low)
                 {
-                    if (past)
-                        high++;
                     break;
                 }
 
