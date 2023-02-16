@@ -157,6 +157,37 @@ internal class Program
                 Board b = Board.DefaultBoard.Clone();
                 test.board = b.Compress();
 
+                int i = 0;
+
+                /*
+                test.whiteWins = (ulong)i++;
+                test.blackWins = (ulong)i++;
+                test.stalemates = i++;
+                FindOrCreateNode(test);
+                FindOrCreateNode(test);
+                Console.WriteLine($"{test.whiteWins}, {test.blackWins}, {test.stalemates}");
+                continue;
+                */
+
+                /*
+                foreach (Board child in b.CalculateValidBoards())
+                {
+                    Node n = new Node(child.Compress());
+                    n.whiteWins = (ulong)i++;
+                    n.blackWins = (ulong)i++;
+                    n.stalemates = i++;
+                    FindOrCreateNode(n);
+                }
+
+                foreach (Board child in b.CalculateValidBoards())
+                {
+                    Node n = new Node(child.Compress());
+                    FindOrCreateNode(n);
+                    Console.WriteLine($"{n.whiteWins}, {n.blackWins}, {n.stalemates}");
+                }
+                continue;
+                */
+
                 FindOrCreateNode(test);
 
                 Console.WriteLine();
@@ -1056,7 +1087,8 @@ internal class Program
     {
         string path = GetNodePath(node);
 
-        int read;
+        int read = 0;
+        int build = 0;
         int b;
         bool past = false;
         bool found = false;
@@ -1093,7 +1125,7 @@ internal class Program
         // 0-5 -> 2
         // 3-5 -> 4
         // 5-5 -> 5 -> break;
-        
+
         // between 0 and 1 process
         // 0-5 -> 2
         // 0-1 -> 0
@@ -1108,47 +1140,50 @@ internal class Program
         // if (ourVal > fileItem[middle]) move forward
         // if (ourVal < fileItem[middle]) move backward
 
-        do
+        if (items > 0)
         {
-            // Move to center item between high and low
-            fs.Position = (high + low) / 2 * LINE_LENGTH;
-
-            // Default case if everything goes well
-            found = true;
-
-            // 36 bytes of pieces
-            for (read = 0; read < 36; read++)
+            do
             {
-                b = (byte)fs.ReadByte();
-                if (b != node.board[read + 3])
-                {
-                    past = b > node.board[read + 3];
-                    read++;
-                    found = false;
-                    break;
-                }
-            }
+                // Move to center item between high and low
+                fs.Position = (high + low) / 2 * LINE_LENGTH;
 
-            // If we didn't match the whole board
-            if (!found)
-            {
-                // Didn't find, break out
-                if (high <= low)
+                // Default case if everything goes well
+                found = true;
+
+                // 36 bytes of pieces
+                for (read = 0; read < 36; read++)
                 {
-                    break;
+                    b = (byte)fs.ReadByte();
+                    if (b != node.board[read + 3])
+                    {
+                        past = b > node.board[read + 3];
+                        read++;
+                        found = false;
+                        break;
+                    }
                 }
 
-                // file item is greater than our item
-                if (past)
+                // If we didn't match the whole board
+                if (!found)
                 {
-                    high = (fs.Position - read) / LINE_LENGTH - 1;
+                    // Didn't find, break out
+                    if (high <= low)
+                    {
+                        break;
+                    }
+
+                    // file item is greater than our item
+                    if (past)
+                    {
+                        high = (fs.Position - read) / LINE_LENGTH - 1;
+                    }
+                    else
+                    {
+                        low = (fs.Position - read) / LINE_LENGTH + 1;
+                    }
                 }
-                else
-                {
-                    low = (fs.Position - read) / LINE_LENGTH + 1;
-                }
-            }
-        } while (!found);
+            } while (!found);
+        }
 
         // Found exact element
         if (found)
@@ -1165,49 +1200,57 @@ internal class Program
         // Didn't find element
         else
         {
-            // Only need to push the rest of the lines if we're not at the end
-            if (!past)
+            // Build first newLine to insert
+            for (build = 0; build < 36; build++)
             {
-                // We're already at the insertion point of the next element
-                fs.Seek(-read, SeekOrigin.Current);
+                newLine[build] = node.board[build + 3];
+            }
+            winBytes = BitConverter.GetBytes(node.whiteWins);
+            for (build = 0; build < 8; build++)
+            {
+                newLine[36 + build] = winBytes[build];
+            }
+            winBytes = BitConverter.GetBytes(node.blackWins);
+            for (build = 0; build < 8; build++)
+            {
+                newLine[44 + build] = winBytes[build];
+            }
+            winBytes = BitConverter.GetBytes(node.stalemates);
+            for (build = 0; build < 8; build++)
+            {
+                newLine[52 + build] = winBytes[build];
+            }
 
-                // Build first newLine to insert
-                for (read = 0; read < 36; read++)
+            if (items > 0)
+            {
+                // Only need to push the rest of the lines if we're not at the end
+                if (past || high != items - 1)
                 {
-                    newLine[read] = node.board[read + 3];
-                }
-                winBytes = BitConverter.GetBytes(node.whiteWins);
-                for (read = 0; read < 8; read++)
-                {
-                    newLine[36 + read] = winBytes[read];
-                }
-                winBytes = BitConverter.GetBytes(node.blackWins);
-                for (read = 0; read < 8; read++)
-                {
-                    newLine[44 + read] = winBytes[read];
-                }
-                winBytes = BitConverter.GetBytes(node.stalemates);
-                for (read = 0; read < 8; read++)
-                {
-                    newLine[52 + read] = winBytes[read];
-                }
+                    if (past)
+                        // We're already at the insertion point of the next element
+                        fs.Seek(-read, SeekOrigin.Current);
+                    else
+                        // Next line is insertion point
+                        fs.Seek(LINE_LENGTH - read, SeekOrigin.Current);
 
-                // Insert into where we belong
-                while (fs.Position < fs.Length)
-                {
-                    fs.Read(lastLine, 0, LINE_LENGTH);
-                    fs.Seek(-LINE_LENGTH, SeekOrigin.Current);
-                    fs.Write(newLine, 0, LINE_LENGTH);
-                    for (read = 0; read < LINE_LENGTH; read++)
+
+                    // Insert into where we belong
+                    while (fs.Position < fs.Length)
                     {
-                        newLine[read] = lastLine[read];
+                        fs.Read(lastLine, 0, LINE_LENGTH);
+                        fs.Seek(-LINE_LENGTH, SeekOrigin.Current);
+                        fs.Write(newLine, 0, LINE_LENGTH);
+                        for (build = 0; build < LINE_LENGTH; build++)
+                        {
+                            newLine[build] = lastLine[build];
+                        }
                     }
                 }
-            }
-            // We're inserting at the end
-            else
-            {
-                fs.Seek(LINE_LENGTH - read, SeekOrigin.Current);
+                // We're inserting at the end
+                else
+                {
+                    fs.Seek(LINE_LENGTH - read, SeekOrigin.Current);
+                }
             }
 
             // Write the last line into the file
@@ -1384,47 +1427,50 @@ internal class Program
         // if (ourVal > fileItem[middle]) move forward
         // if (ourVal < fileItem[middle]) move backward
 
-        do
+        if (items > 0)
         {
-            // Move to center item between high and low
-            fs.Position = (high + low) / 2 * LINE_LENGTH;
-
-            // Default case if everything goes well
-            found = true;
-
-            // 36 bytes of pieces
-            for (read = 0; read < 36; read++)
+            do
             {
-                b = (byte)fs.ReadByte();
-                if (b != node.board[read + 3])
-                {
-                    past = b > node.board[read + 3];
-                    read++;
-                    found = false;
-                    break;
-                }
-            }
+                // Move to center item between high and low
+                fs.Position = (high + low) / 2 * LINE_LENGTH;
 
-            // If we didn't match the whole board
-            if (!found)
-            {
-                // Didn't find, break out
-                if (high <= low)
+                // Default case if everything goes well
+                found = true;
+
+                // 36 bytes of pieces
+                for (read = 0; read < 36; read++)
                 {
-                    break;
+                    b = (byte)fs.ReadByte();
+                    if (b != node.board[read + 3])
+                    {
+                        past = b > node.board[read + 3];
+                        read++;
+                        found = false;
+                        break;
+                    }
                 }
 
-                // file item is greater than our item
-                if (past)
+                // If we didn't match the whole board
+                if (!found)
                 {
-                    high = (fs.Position - read) / LINE_LENGTH - 1;
+                    // Didn't find, break out
+                    if (high <= low)
+                    {
+                        break;
+                    }
+
+                    // file item is greater than our item
+                    if (past)
+                    {
+                        high = (fs.Position - read) / LINE_LENGTH - 1;
+                    }
+                    else
+                    {
+                        low = (fs.Position - read) / LINE_LENGTH + 1;
+                    }
                 }
-                else
-                {
-                    low = (fs.Position - read) / LINE_LENGTH + 1;
-                }
-            }
-        } while (!found);
+            } while (!found);
+        }
 
         // Found exact element
         if (found)
