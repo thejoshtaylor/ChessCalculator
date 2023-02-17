@@ -9,6 +9,7 @@ using System.Reflection.Metadata.Ecma335;
 using System.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Threading;
 using System.Xml.Linq;
 
 internal class Program
@@ -151,7 +152,7 @@ internal class Program
                     input = Console.ReadLine();
                 } while (int.TryParse(input, out result) && result == 0);
                 */
-                
+
                 // Do the sims
                 Node test = new Node();
                 Board b = Board.DefaultBoard.Clone();
@@ -177,6 +178,7 @@ internal class Program
                     n.blackWins = (ulong)i++;
                     n.stalemates = i++;
                     FindOrCreateNode(n);
+                    UpdateNodeWins(n, ++n.whiteWins, ++n.blackWins, ++n.stalemates);
                 }
 
                 foreach (Board child in b.CalculateValidBoards())
@@ -303,7 +305,7 @@ internal class Program
             progress.Add((0, 0, 0, 0, 0, 0, 0));
 
             taskProgress.Add(new Progress<(ulong, ulong, ulong, ulong, ulong, long, int)>());
-            taskProgress[currentIndex].ProgressChanged +=  (a, val) => progress[currentIndex] = val;
+            taskProgress[currentIndex].ProgressChanged += (a, val) => progress[currentIndex] = val;
 
             subtasks.Add(new Task(new Action(() => GetWins(new Node(n.board), currentIndex, taskProgress[currentIndex], maxLevel)),
                 TaskCreationOptions.LongRunning));
@@ -324,7 +326,7 @@ internal class Program
         ulong totalBlackWins = 0;
         long totalStalemates = 0;
         int maximumLevel = 0;
-        
+
         bool first = true;
 
         do
@@ -355,6 +357,9 @@ internal class Program
             Console.WriteLine($"{(children.Count - countComplete),2}/{children.Count} running  -  {main.Elapsed:hh':'mm':'ss}");
             Console.WriteLine(new string('-', 26));
             Console.WriteLine();
+            // TODO estimated percentage
+            // TODO time / 10,000 items
+            // TODO skipped vs saved
             Console.WriteLine("## |    left    |    done    |    skip    |  white  |  black  |  stale  | max lev |");
             Console.WriteLine("---|------------|------------|------------|---------|---------|---------|---------|");
 
@@ -421,6 +426,8 @@ internal class Program
         token = source.Token;
     }
 
+    const int STACK_BUFFER = 100_000;
+    const int STACK_MIN = 1000;
     /// <summary>
     /// Calculates the percentage of children that lead to a win for white
     /// </summary>
@@ -456,11 +463,99 @@ internal class Program
         // Run till the stack's empty
         while (boardStack.Count > 0)
         {
+            // Check if we should store some of the stack on the hard drive
+            if (boardStack.Count > 2 * STACK_BUFFER)
+            {
+                // Write 100,000 to file
+                using (FileStream fs = new FileStream($"chess\\thread{threadNum}.stck", FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
+                {
+                    Stack<Node> newBoardStack = new();
+                    byte[] longBytes = new byte[8];
+
+                    // Move to end and append
+                    fs.Seek(0, SeekOrigin.End);
+
+                    // Start writing elements to the file
+                    int i = 0;
+                    foreach (Node w in boardStack.Reverse())
+                    {
+                        // Handles first buffer amount
+                        if (i < STACK_BUFFER)
+                        {
+                            fs.Write(w.board, 0, 39);
+
+                            longBytes = BitConverter.GetBytes(w.whiteWins);
+                            fs.Write(longBytes, 0, 8);
+                            longBytes = BitConverter.GetBytes(w.blackWins);
+                            fs.Write(longBytes, 0, 8);
+                            longBytes = BitConverter.GetBytes(w.stalemates);
+                            fs.Write(longBytes, 0, 8);
+                        }
+                        // Handles everything that's left after the buffer
+                        else
+                        {
+                            newBoardStack.Push(w);
+                        }
+
+                        i++;
+                    }
+
+                    // Update the board stack with the smaller one
+                    boardStack = newBoardStack;
+                }
+            }
+            // Only check at exactly the minimum because we only pop once per cycle
+            else if (boardStack.Count == STACK_MIN)
+            {
+                // Read the buffer amount of items from file, if it exists
+                if (File.Exists($"chess\\thread{threadNum}.stck"))
+                {
+                    using (FileStream fs = new FileStream($"chess\\thread{threadNum}.stck", FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    {
+                        Stack<Node> newBoardStack = new();
+                        byte[] longBytes = new byte[8];
+
+                        fs.Seek(-STACK_BUFFER * LINE_LENGTH, SeekOrigin.End);
+
+                        // Add file nodes
+                        for (int i = 0; i < STACK_BUFFER; i++)
+                        {
+                            // Read an element and add it to the stack
+                            Node w = new();
+
+                            fs.Read(w.board, 0, 39);
+
+                            fs.Read(longBytes, 0, 8);
+                            w.whiteWins = BitConverter.ToUInt64(longBytes);
+                            fs.Read(longBytes, 0, 8);
+                            w.blackWins = BitConverter.ToUInt64(longBytes);
+                            fs.Read(longBytes, 0, 8);
+                            w.stalemates = BitConverter.ToInt64(longBytes);
+
+                            newBoardStack.Push(w);
+                        }
+
+                        // Copy existing buffer on top of our new buffer
+                        foreach (Node w in boardStack.Reverse())
+                        {
+                            newBoardStack.Push(w);
+                        }
+
+                        // Assign stack to newly created stack
+                        boardStack = newBoardStack;
+
+                        // Erase the lines from the file
+                        fs.Seek(-STACK_BUFFER * LINE_LENGTH, SeekOrigin.End);
+                        fs.SetLength(fs.Position);
+                    }
+                }
+            }
+
             // Check if we tried to cancel
             if (threadNum != -1 && token.IsCancellationRequested)
             {
                 // Save our stack and exit
-                SaveNodes($"chess\\thread{threadNum}.stack", boardStack, directLine, ref calculated, ref skipped,
+                SaveNodes($"chess\\thread{threadNum}.state", boardStack, directLine, ref calculated, ref skipped,
                     ref totalWhiteWins, ref totalBlackWins, ref totalStalemates, ref mxLevel,
                     ref whiteWins, ref blackWins, ref stalemates, ref lastParentWhiteTurn, ref currentLevel);
 
@@ -477,7 +572,7 @@ internal class Program
                 whiteWins.RemoveAt(currentLevel);
                 blackWins.RemoveAt(currentLevel);
                 stalemates.RemoveAt(currentLevel);
-                
+
                 lastParentWhiteTurn = !lastParentWhiteTurn;
 
                 if (currentLevel > mxLevel)
@@ -1364,7 +1459,7 @@ internal class Program
         fs.Close();
 
         return found;
-*/
+    */
     }
 
     private static bool UpdateNodeWins(in Node node, ulong whiteWins, ulong blackWins, long stalemates)
