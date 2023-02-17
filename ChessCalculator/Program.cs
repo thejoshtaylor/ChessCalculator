@@ -2,6 +2,7 @@
 using System.Collections.Immutable;
 using System.Data.Common;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Diagnostics.SymbolStore;
 using System.IO;
 using System.Net.Security;
@@ -288,9 +289,9 @@ internal class Program
 
         List<Node> children = Board.DefaultBoard.CalculateValidBoards().Select(b => new Node(b.Compress())).ToList();
         List<Task> subtasks = new List<Task>(children.Count);
-        List<Progress<(ulong, ulong, ulong, ulong, ulong, long, int)>> taskProgress =
-            new List<Progress<(ulong, ulong, ulong, ulong, ulong, long, int)>>(children.Count);
-        List<(ulong, ulong, ulong, ulong, ulong, long, int)> progress = new();
+        List<Progress<(ulong, ulong, ulong, ulong, ulong, ulong, long, int, int, int)>> taskProgress =
+            new List<Progress<(ulong, ulong, ulong, ulong, ulong, ulong, long, int, int, int)>>(children.Count);
+        List<(ulong, ulong, ulong, ulong, ulong, ulong, long, int, int, int)> progress = new();
 
         Stopwatch main = new Stopwatch();
         main.Start();
@@ -302,9 +303,9 @@ internal class Program
         foreach (Node n in children)
         {
             int currentIndex = index;
-            progress.Add((0, 0, 0, 0, 0, 0, 0));
+            progress.Add((0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
 
-            taskProgress.Add(new Progress<(ulong, ulong, ulong, ulong, ulong, long, int)>());
+            taskProgress.Add(new Progress<(ulong, ulong, ulong, ulong, ulong, ulong, long, int, int, int)>());
             taskProgress[currentIndex].ProgressChanged += (a, val) => progress[currentIndex] = val;
 
             subtasks.Add(new Task(new Action(() => GetWins(new Node(n.board), currentIndex, taskProgress[currentIndex], maxLevel)),
@@ -321,11 +322,13 @@ internal class Program
 
         ulong totalLeft = 0;
         ulong totalCalculated = 0;
+        ulong totalSkipped = 0;
         ulong totalSaved = 0;
         ulong totalWhiteWins = 0;
         ulong totalBlackWins = 0;
         long totalStalemates = 0;
         int maximumLevel = 0;
+        long totalTrackedMillis = 0;
 
         bool first = true;
 
@@ -344,10 +347,12 @@ internal class Program
 
             totalLeft = 0;
             totalCalculated = 0;
+            totalSkipped = 0;
             totalSaved = 0;
             totalWhiteWins = 0;
             totalBlackWins = 0;
             totalStalemates = 0;
+            totalTrackedMillis = 0;
 
             if (!first)
                 Console.CursorTop -= children.Count + 7;
@@ -360,30 +365,34 @@ internal class Program
             // TODO estimated percentage
             // TODO time / 10,000 items
             // TODO skipped vs saved
-            Console.WriteLine("## |    left    |    done    |    skip    |  white  |  black  |  stale  | max lev |");
-            Console.WriteLine("---|------------|------------|------------|---------|---------|---------|---------|");
+            Console.WriteLine(" ## |     left     |     done     |     skip     |     save     |  white  |  black  |  stale  | max lev | time (ms) |");
+            Console.WriteLine(" ---|--------------|--------------|--------------|--------------|---------|---------|---------|---------|-----------|");
 
             for (int i = 0; i < progress.Count; i++)
             {
-                totalLeft += progress[i].Item1;
+                totalLeft += progress[i].Item1 + (ulong)(progress[i].Item9 * STACK_BUFFER);
                 totalCalculated += progress[i].Item2;
-                totalSaved += progress[i].Item3;
-                totalWhiteWins += progress[i].Item4;
-                totalBlackWins += progress[i].Item5;
-                totalStalemates += progress[i].Item6;
+                totalSkipped += progress[i].Item3;
+                totalSaved += progress[i].Item4;
+                totalWhiteWins += progress[i].Item5;
+                totalBlackWins += progress[i].Item6;
+                totalStalemates += progress[i].Item7;
 
-                if (progress[i].Item7 > maximumLevel)
+                totalTrackedMillis += (long)progress[i].Item10;
+
+                if (progress[i].Item8 > maximumLevel)
                 {
-                    maximumLevel = progress[i].Item7;
+                    maximumLevel = progress[i].Item8;
                 }
 
-                Console.WriteLine($"{i + 1,2} | {progress[i].Item1,10} | {progress[i].Item2,10} | {progress[i].Item3,10} | " +
-                    $"{progress[i].Item4,7} | {progress[i].Item5,7} | {progress[i].Item6,7} | {progress[i].Item7,7} |");
+                Console.WriteLine($" {i + 1,2} | {progress[i].Item1 + (ulong)(progress[i].Item9 * STACK_BUFFER),12} | " +
+                    $"{progress[i].Item2,12} | {progress[i].Item3,12} | {progress[i].Item4,12} | " +
+                    $"{progress[i].Item5,7} | {progress[i].Item6,7} | {progress[i].Item7,7} | {progress[i].Item8,7} | {progress[i].Item10,9} |");
             }
 
-            Console.WriteLine("---|------------|------------|------------|---------|---------|---------|---------|");
-            Console.WriteLine($"TT | {totalLeft,10} | {totalCalculated,10} | {totalSaved,10} | " +
-                $"{totalWhiteWins,7} | {totalBlackWins,7} | {totalStalemates,7} | {maximumLevel,7} |");
+            Console.WriteLine(" ---|--------------|--------------|--------------|--------------|---------|---------|---------|---------|-----------|");
+            Console.WriteLine($" TT | {totalLeft,12} | {totalCalculated,12} | {totalSkipped,12} | {totalSaved,12} | " +
+                $"{totalWhiteWins,7} | {totalBlackWins,7} | {totalStalemates,7} | {maximumLevel,7} | {totalTrackedMillis / progress.Count,9} |");
 
             // If we cancelled
             if (token.IsCancellationRequested)
@@ -426,14 +435,17 @@ internal class Program
         token = source.Token;
     }
 
-    const int STACK_BUFFER = 100_000;
+    const int STACK_BUFFER = 10_000;
     const int STACK_MIN = 1000;
+
+    // How many items we process before we report time
+    const int TRACK_COUNT = 1000;
     /// <summary>
     /// Calculates the percentage of children that lead to a win for white
     /// </summary>
     /// <param name="b"></param>
     /// <returns></returns>
-    private static void GetWins(in Node n, int threadNum = -1, IProgress<(ulong, ulong, ulong, ulong, ulong, long, int)> progress = null, int maxLevel = -1)
+    private static void GetWins(in Node n, int threadNum = -1, IProgress<(ulong, ulong, ulong, ulong, ulong, ulong, long, int, int, int)> progress = null, int maxLevel = -1)
     {
         ulong totalWhiteWins = 0;
         ulong totalBlackWins = 0;
@@ -442,7 +454,16 @@ internal class Program
         int mxLevel = 0;
 
         ulong calculated = 0;
+        // Skipped because its a parent
         ulong skipped = 0;
+        // Saved because already calculated
+        ulong saved = 0;
+
+        Stopwatch trackSpeed = new();
+        int trackedMillis = 0;
+        int trackCounter = 0;
+
+        int stacksSaved = 0;
 
         List<ulong> whiteWins = new List<ulong>() { 0 };
         List<ulong> blackWins = new List<ulong>() { 0 };
@@ -455,19 +476,30 @@ internal class Program
         int currentLevel = 0;
 
         // Attempt to load nodes from disk
-        if (!LoadNodes($"chess\\thread{threadNum}.stack", out Stack<Node> boardStack, out Stack<Node> directLine,
-                ref calculated, ref skipped, ref totalWhiteWins, ref totalBlackWins, ref totalStalemates, ref mxLevel,
-                ref whiteWins, ref blackWins, ref stalemates, ref lastParentWhiteTurn, ref currentLevel))
+        if (!LoadNodes($"chess\\thread{threadNum}.state", out Stack<Node> boardStack, out Stack<Node> directLine,
+                ref calculated, ref skipped, ref saved, ref totalWhiteWins, ref totalBlackWins, ref totalStalemates, ref mxLevel,
+                ref whiteWins, ref blackWins, ref stalemates, ref lastParentWhiteTurn, ref currentLevel, ref stacksSaved))
             boardStack.Push(n);
+
+        trackSpeed.Start();
 
         // Run till the stack's empty
         while (boardStack.Count > 0)
         {
+            // Calculate how long it takes to do a certain number of calcs
+            if (trackCounter >= TRACK_COUNT)
+            {
+                trackedMillis = (int)trackSpeed.ElapsedMilliseconds;
+                trackCounter = -1;
+                trackSpeed.Restart();
+            }
+            trackCounter++;
+
             // Check if we should store some of the stack on the hard drive
             if (boardStack.Count > 2 * STACK_BUFFER)
             {
                 // Write 100,000 to file
-                using (FileStream fs = new FileStream($"chess\\thread{threadNum}.stck", FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
+                using (FileStream fs = new FileStream($"chess\\thread{threadNum}.stack", FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
                 {
                     Stack<Node> newBoardStack = new();
                     byte[] longBytes = new byte[8];
@@ -502,15 +534,17 @@ internal class Program
 
                     // Update the board stack with the smaller one
                     boardStack = newBoardStack;
+
+                    stacksSaved++;
                 }
             }
             // Only check at exactly the minimum because we only pop once per cycle
             else if (boardStack.Count == STACK_MIN)
             {
                 // Read the buffer amount of items from file, if it exists
-                if (File.Exists($"chess\\thread{threadNum}.stck"))
+                if (File.Exists($"chess\\thread{threadNum}.stack"))
                 {
-                    using (FileStream fs = new FileStream($"chess\\thread{threadNum}.stck", FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    using (FileStream fs = new FileStream($"chess\\thread{threadNum}.stack", FileMode.Open, FileAccess.ReadWrite, FileShare.None))
                     {
                         Stack<Node> newBoardStack = new();
                         byte[] longBytes = new byte[8];
@@ -547,6 +581,8 @@ internal class Program
                         // Erase the lines from the file
                         fs.Seek(-STACK_BUFFER * LINE_LENGTH, SeekOrigin.End);
                         fs.SetLength(fs.Position);
+
+                        stacksSaved--;
                     }
                 }
             }
@@ -555,9 +591,9 @@ internal class Program
             if (threadNum != -1 && token.IsCancellationRequested)
             {
                 // Save our stack and exit
-                SaveNodes($"chess\\thread{threadNum}.state", boardStack, directLine, ref calculated, ref skipped,
+                SaveNodes($"chess\\thread{threadNum}.state", boardStack, directLine, ref calculated, ref skipped, ref saved,
                     ref totalWhiteWins, ref totalBlackWins, ref totalStalemates, ref mxLevel,
-                    ref whiteWins, ref blackWins, ref stalemates, ref lastParentWhiteTurn, ref currentLevel);
+                    ref whiteWins, ref blackWins, ref stalemates, ref lastParentWhiteTurn, ref currentLevel, ref stacksSaved);
 
                 break;
             }
@@ -587,7 +623,8 @@ internal class Program
 
                 calculated++;
 
-                progress?.Report(((ulong)boardStack.Count, calculated, skipped, totalWhiteWins, totalBlackWins, totalStalemates, mxLevel));
+                progress?.Report(((ulong)boardStack.Count, calculated, skipped, saved, totalWhiteWins, totalBlackWins, totalStalemates,
+                    mxLevel, stacksSaved, trackedMillis));
                 //string toPrint = $"{boardStack.Count} left, {calculated} done - w: {totalWhiteWins}, b: {totalBlackWins}, s: {totalStalemates} - max lev: {mxLevel}";
                 //Console.Write(new string('\b', printed) + toPrint);
                 //printed = (short)toPrint.Length;
@@ -629,7 +666,7 @@ internal class Program
                     whiteWins[currentLevel] += node.whiteWins;
                     blackWins[currentLevel] += node.blackWins;
                     stalemates[currentLevel] += node.stalemates;
-                    skipped++;
+                    saved++;
                     continue;
                     //return (node.whiteWins, node.blackWins, node.stalemates);
                 }
@@ -1654,8 +1691,8 @@ internal class Program
     }
 
     private static bool LoadNodes(string path, out Stack<Node> nodes, out Stack<Node> directLine,
-                ref ulong calculated, ref ulong skipped, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
-                ref List<ulong> whiteWins, ref List<ulong> blackWins, ref List<long> stalemates, ref bool lastParentWhiteTurn, ref int currentLevel)
+                ref ulong calculated, ref ulong skipped, ref ulong saved, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
+                ref List<ulong> whiteWins, ref List<ulong> blackWins, ref List<long> stalemates, ref bool lastParentWhiteTurn, ref int currentLevel, ref int stacksSaved)
     {
         nodes = new Stack<Node>();
         directLine = new Stack<Node>();
@@ -1682,6 +1719,8 @@ internal class Program
             fs.Read(longBytes, 0, 8);
             skipped = BitConverter.ToUInt64(longBytes);
             fs.Read(longBytes, 0, 8);
+            saved = BitConverter.ToUInt64(longBytes);
+            fs.Read(longBytes, 0, 8);
             totalWhiteWins = BitConverter.ToUInt64(longBytes);
             fs.Read(longBytes, 0, 8);
             totalBlackWins = BitConverter.ToUInt64(longBytes);
@@ -1691,6 +1730,8 @@ internal class Program
             mxLevel = BitConverter.ToInt32(intBytes);
             fs.Read(intBytes, 0, 4);
             currentLevel = BitConverter.ToInt32(intBytes);
+            fs.Read(intBytes, 0, 4);
+            stacksSaved = BitConverter.ToInt32(intBytes);
 
             lastParentWhiteTurn = fs.ReadByte() == 1;
 
@@ -1758,8 +1799,8 @@ internal class Program
     }
 
     private static void SaveNodes(string path, in Stack<Node> nodes, in Stack<Node> directLine,
-                ref ulong calculated, ref ulong skipped, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
-                ref List<ulong> whiteWins, ref List<ulong> blackWins, ref List<long> stalemates, ref bool lastParentWhiteTurn, ref int currentLevel)
+                ref ulong calculated, ref ulong skipped, ref ulong saved, ref ulong totalWhiteWins, ref ulong totalBlackWins, ref long totalStalemates, ref int mxLevel,
+                ref List<ulong> whiteWins, ref List<ulong> blackWins, ref List<long> stalemates, ref bool lastParentWhiteTurn, ref int currentLevel, ref int stacksSaved)
     {
         ulong num = 0;
         //Console.Write("Saving... 00%");
@@ -1774,6 +1815,8 @@ internal class Program
             fs.Write(longBytes, 0, 8);
             longBytes = BitConverter.GetBytes(skipped);
             fs.Write(longBytes, 0, 8);
+            longBytes = BitConverter.GetBytes(saved);
+            fs.Write(longBytes, 0, 8);
             longBytes = BitConverter.GetBytes(totalWhiteWins);
             fs.Write(longBytes, 0, 8);
             longBytes = BitConverter.GetBytes(totalBlackWins);
@@ -1783,6 +1826,8 @@ internal class Program
             intBytes = BitConverter.GetBytes(mxLevel);
             fs.Write(intBytes, 0, 4);
             intBytes = BitConverter.GetBytes(currentLevel);
+            fs.Write(intBytes, 0, 4);
+            intBytes = BitConverter.GetBytes(stacksSaved);
             fs.Write(intBytes, 0, 4);
 
             fs.WriteByte((byte)(lastParentWhiteTurn ? 1 : 0));
